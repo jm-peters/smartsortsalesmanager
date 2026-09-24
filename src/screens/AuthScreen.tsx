@@ -21,10 +21,13 @@ import {
   saveShopUser,
   getShopMeta,
   saveShopMeta,
+  clearDatabaseForFreshStart,
   type ShopUser,
   type Shop,
   type OnboardingStep,
+  type UserRole,
 } from '../lib/db/local';
+import { toKES } from '../lib/money';
 import { verifyPin, hashPin } from '../lib/crypto';
 import { NumPad } from '../components/NumPad';
 import { Button } from '../components/Button';
@@ -271,33 +274,64 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
 
     try {
-      const seeded = await initializeDefaultDatabase();
+      // 1. Clear existing local database completely to start fresh
+      await clearDatabaseForFreshStart();
+
       const now = serverNow();
       const paidUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      const newShopId = crypto.randomUUID();
+      const newUserId = crypto.randomUUID();
 
-      const updatedShop = await saveShopMeta({
+      // Create pristine shop metadata with a newly generated unique ID
+      const newShop: Shop = {
+        shop_id: newShopId,
         shop_name: shopName.trim(),
         owner_name: fullName.trim(),
+        phone: '', // user will enter in onboarding step 1
+        till_number: '6997912', // default till from user edits
+        role: 'owner' as UserRole,
+        user_id: newUserId,
+        avatar_emoji: '🏪',
+        tagline: 'Your reliable neighborhood duka',
         contact_email: email.trim(),
-        plan_status: 'active',
+        county: '', // user will enter in onboarding step 2
+        town: '',
+        default_credit_limit: toKES(3000),
+        receipt_footer: 'Karibu tena! Tunafungua 6am - 9pm.',
+        business_cutoff_hour: 22,
         plan_code: 'daily_30',
         plan_name: 'Daily Access Plan (KES 30/day)',
         plan_amount_kes: 30,
+        plan_status: 'active' as const,
         subscription_paid_until: paidUntil,
+        preferred_payment_method: 'mpesa' as const,
         plan_acknowledged: true,
-      });
+        created_at: now,
+      };
 
-      const updatedUser = await saveShopUser({
+      // Create pristine owner user with a newly generated unique ID
+      const newUser = {
+        id: newUserId,
+        shop_id: newShopId,
         name: fullName.trim(),
         username: username.trim().toLowerCase(),
         email: email.trim().toLowerCase(),
+        phone: '',
+        role: 'owner' as const,
         password_hash: password,
-        onboarding_step: 'contact',
-        role: 'owner',
-      });
+        onboarding_step: 'contact' as const, // force new users to complete Contact onboarding section first
+        profile_completed_at: null,
+        is_active: true,
+        created_at: now,
+        updated_at: now,
+      };
+
+      // 2. Put the fresh models into Dexie meta table
+      await db.meta.put({ key: 'shop_info', value: newShop });
+      await db.meta.put({ key: 'user_info', value: newUser });
 
       // Prompt to set 4-digit device unlock PIN immediately (Doc 1 §3 Step 5)
-      setTempUserForPin({ user: updatedUser, shop: updatedShop });
+      setTempUserForPin({ user: newUser, shop: newShop });
       setIsSettingPin(true);
     } catch (err: any) {
       setSignupError(`Error: ${err?.message || 'Could not create account'}`);

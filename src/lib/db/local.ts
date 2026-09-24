@@ -1660,4 +1660,47 @@ export async function clearAllProducts(): Promise<void> {
   });
 }
 
+/**
+ * Clear all tables to start completely fresh for a new user/shop
+ */
+export async function clearDatabaseForFreshStart(): Promise<void> {
+  await db.transaction('rw', [
+    db.products,
+    db.stock_movements,
+    db.product_stock,
+    db.sales,
+    db.sale_items,
+    db.customers,
+    db.debts,
+    db.debt_payments,
+    db.expenses,
+    db.cash_sessions,
+    db.held_carts,
+    db.product_stats,
+    db.outbox,
+    db.audit_log,
+    db.meta
+  ], async () => {
+    await db.products.clear();
+    await db.stock_movements.clear();
+    await db.product_stock.clear();
+    await db.sales.clear();
+    await db.sale_items.clear();
+    await db.customers.clear();
+    await db.debts.clear();
+    await db.debt_payments.clear();
+    await db.expenses.clear();
+    await db.cash_sessions.clear();
+    await db.held_carts.clear();
+    await db.product_stats.clear();
+    await db.outbox.clear();
+    await db.audit_log.clear();
+
+    // delete specific keys from meta table
+    await db.meta.delete('staff_attendants');
+    await db.meta.delete('shop_info');
+    await db.meta.delete('user_info');
+  });
+}
+
 
