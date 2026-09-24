@@ -1,0 +1,6 @@
+{
+  "name": "SmartSort Sales Manager",
+  "description": "Phone-only POS for small retail shops (duka) in Kenya. Simu yako ndio cashier.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

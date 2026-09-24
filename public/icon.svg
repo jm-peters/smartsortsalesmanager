@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="ssmGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A9D5F" />
+      <stop offset="100%" stop-color="#1E6F9F" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B" />
+      <stop offset="100%" stop-color="#D97706" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity="0.25" flood-color="#0F172A" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded canvas -->
+  <rect width="512" height="512" rx="112" fill="url(#ssmGrad)" />
+
+  <!-- Inner safe zone decorative subtle ring -->
+  <rect x="36" y="36" width="440" height="440" rx="90" fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="3" />
+
+  <!-- Phone POS device silhouette -->
+  <g filter="url(#shadow)">
+    <!-- Phone body -->
+    <rect x="136" y="80" width="240" height="352" rx="36" fill="#FFFFFF" />
+    <!-- Screen -->
+    <rect x="152" y="112" width="208" height="272" rx="20" fill="#F8FAFC" />
+    <!-- Speaker slit -->
+    <rect x="224" y="96" width="64" height="6" rx="3" fill="#CBD5E1" />
+    <!-- Home indicator bar -->
+    <rect x="216" y="412" width="80" height="6" rx="3" fill="#E2E8F0" />
+
+    <!-- Screen Content: Top Bar -->
+    <rect x="168" y="128" width="176" height="40" rx="10" fill="#0A9D5F" />
+    <!-- Screen Header Text Representation -->
+    <circle cx="188" cy="148" r="8" fill="#FFFFFF" />
+    <rect x="206" y="142" width="70" height="6" rx="3" fill="#FFFFFF" />
+    <rect x="206" y="152" width="40" height="4" rx="2" fill="#A7F3D0" />
+    <circle cx="328" cy="148" r="6" fill="#A7F3D0" />
+
+    <!-- Screen Content: Keypad / Product Grid -->
+    <rect x="168" y="180" width="82" height="54" rx="10" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2" />
+    <rect x="180" y="194" width="40" height="8" rx="4" fill="#0F172A" />
+    <rect x="180" y="208" width="56" height="12" rx="4" fill="#0A9D5F" fill-opacity="0.15" />
+    <text x="184" y="217" font-family="-apple-system, sans-serif" font-size="9" font-weight="bold" fill="#0A9D5F">KES 100</text>
+
+    <rect x="262" y="180" width="82" height="54" rx="10" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2" />
+    <rect x="274" y="194" width="45" height="8" rx="4" fill="#0F172A" />
+    <rect x="274" y="208" width="56" height="12" rx="4" fill="#0A9D5F" fill-opacity="0.15" />
+    <text x="278" y="217" font-family="-apple-system, sans-serif" font-size="9" font-weight="bold" fill="#0A9D5F">KES 250</text>
+
+    <rect x="168" y="244" width="82" height="54" rx="10" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2" />
+    <rect x="180" y="258" width="48" height="8" rx="4" fill="#0F172A" />
+    <rect x="180" y="272" width="56" height="12" rx="4" fill="#0A9D5F" fill-opacity="0.15" />
+    <text x="184" y="281" font-family="-apple-system, sans-serif" font-size="9" font-weight="bold" fill="#0A9D5F">KES 60</text>
+
+    <rect x="262" y="244" width="82" height="54" rx="10" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2" />
+    <rect x="274" y="258" width="38" height="8" rx="4" fill="#0F172A" />
+    <rect x="274" y="272" width="56" height="12" rx="4" fill="#0A9D5F" fill-opacity="0.15" />
+    <text x="278" y="281" font-family="-apple-system, sans-serif" font-size="9" font-weight="bold" fill="#0A9D5F">KES 400</text>
+
+    <!-- Bottom Action "Uza" Button inside phone -->
+    <rect x="168" y="312" width="176" height="48" rx="12" fill="url(#ssmGrad)" />
+    <!-- Checkmark & Text in button -->
+    <path d="M210 336 L218 344 L234 328" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+    <text x="244" y="341" font-family="-apple-system, sans-serif" font-size="14" font-weight="bold" fill="#FFFFFF">UZA</text>
+  </g>
+
+  <!-- M-Pesa / Cash floating badge indicator at bottom right -->
+  <g filter="url(#shadow)">
+    <circle cx="370" cy="380" r="44" fill="#FFFFFF" stroke="#0A9D5F" stroke-width="4" />
+    <circle cx="370" cy="380" r="34" fill="#0A9D5F" />
+    <!-- KES currency sign -->
+    <text x="370" y="388" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="22" font-weight="900" fill="#FFFFFF">KSh</text>
+  </g>
+</svg>
