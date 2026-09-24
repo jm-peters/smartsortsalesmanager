@@ -279,7 +279,7 @@ export const translations: Record<Language, Translations> = {
     noAccountPrompt: "Don't have an account?",
     haveAccountPrompt: 'Already have an account?',
     offlineAuthWarning: 'Internet connection is required for first sign-in on this device.',
-    demoAutofillBtn: '⚡ Demo Quick Fill',
+    demoAutofillBtn: ' Demo Quick Fill',
     pinTitle: 'Quick Device Unlock',
     pinSubtitle: 'Enter your 4-digit device PIN',
     invalidCredentials: 'Username/email or password is incorrect.',
@@ -348,19 +348,19 @@ export const translations: Record<Language, Translations> = {
 
     // Plan Section
     planTitle: 'Daily Subscription (KES 30 / day)',
-    currentPlan: 'Daily Duka Access',
+    currentPlan: 'Daily Access',
     trialStatus: 'KES 30 / Day',
     trialEndsDate: (date) => `Paid until ${date}`,
     pricingPendingNotice: 'Daily duka subscription is KES 30/day. Pay easily via M-Pesa STK Push or Buy Goods Till.',
     preferredBillingMethod: 'Payment Method',
     mpesaOption: 'M-Pesa STK Push',
     cashOption: 'Buy Goods Till (Manual)',
-    consentCheckbox: 'I agree to the KES 30 daily subscription rate to access smart duka POS and inventory tools.',
+    consentCheckbox: 'I agree to the KES 30 daily subscription rate to access smartsort POS and inventory tools.',
     payNow: 'Pay Now',
     dailyRate: 'KES 30 / day',
     subscriptionDue: 'Payment Due (KES 30)',
     subscriptionActive: 'Active Subscription',
-    tillPaymentNotice: 'Pay via Buy Goods Till 542190 or request an M-Pesa prompt directly on your phone.',
+    tillPaymentNotice: 'Pay via Buy Goods Till 6997912 or request an M-Pesa prompt directly on your phone.',
 
     // Business Card / Share
     shareShopCardBtn: 'Share Shop Business Card',

@@ -1220,7 +1220,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                       </h4>
                       <p className="text-[11px] text-slate-500 font-medium leading-normal">
                         {language === 'en'
-                          ? 'All shops start with a KES 0 credit limit. Your account will automatically be evaluated for restocking credit once active for at least 3 months.'
+                          ? 'All new shops start with a KES 0 credit limit. Your account will automatically be evaluated for restocking credit once active for at least 3 months.'
                           : 'Maduka yote huanza na kikomo cha KES 0. Akaunti yako itakaguliwa kiotomatiki kwa mikopo mara tu duka litakapokuwa hai kwa angalau miezi 3.'}
                       </p>
                       <div className="text-[10px] font-black text-amber-800 bg-amber-50 border border-amber-200 rounded-full px-3 py-1 inline-block animate-pulse">

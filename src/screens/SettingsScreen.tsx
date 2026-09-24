@@ -551,9 +551,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               : 'Data zote za duka lako (mauzo, faida, madeni ya wateja) zimehifadhiwa kwanza kwenye simu hii chini ya Sheria ya Ulinzi wa Data ya Kenya (Data Protection Act 2019). Hatushiriki data yako na mtu yeyote.'}
           </p>
           <div className="pt-1 flex items-center justify-between text-[10px] text-slate-400">
-            <span>SmartSort POS v1.0 · Fast Retail POS</span>
+            <span>SSM POS · Fast Retail POS</span>
             <a
-              href="https://roastme.site/privacy/sales%20manager"
+              href="https://roastme.site/privacy/"
               target="_blank"
               rel="noopener noreferrer"
               className="text-slate-400 hover:text-slate-600 hover:underline"
