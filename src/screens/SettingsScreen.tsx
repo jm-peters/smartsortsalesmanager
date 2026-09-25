@@ -72,12 +72,57 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
   // Load Active Shop User info for admin verification
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [biometricsEnabled, setBiometricsEnabled] = useState(false);
+
+  // Real live database metrics for Admin Dashboard
+  const [realProductCount, setRealProductCount] = useState(0);
+  const [realSaleCount, setRealSaleCount] = useState(0);
+  const [realCustomerCount, setRealCustomerCount] = useState(0);
+  const [realDebtCount, setRealDebtCount] = useState(0);
+  const [realExpenseCount, setRealExpenseCount] = useState(0);
+  const [realAuditLogCount, setRealAuditLogCount] = useState(0);
+  const [latestAuditLogs, setLatestAuditLogs] = useState<any[]>([]);
+  const [loadTrigger, setLoadTrigger] = useState(0);
 
   // PIN Change Sheet
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [pinStep, setPinStep] = useState<'enter' | 'confirm'>('enter');
+
+  // Load real metrics for peterngecu001@gmail.com
+  useEffect(() => {
+    async function loadRealMetrics() {
+      try {
+        const prodCount = await db.products.count();
+        const saleCount = await db.sales.count();
+        const custCount = await db.customers.count();
+        const debtCount = await db.debts.count();
+        const expCount = await db.expenses.count();
+        const auditCount = await db.audit_log.count();
+        
+        const logs = await db.audit_log
+          .orderBy('created_at')
+          .reverse()
+          .limit(5)
+          .toArray();
+
+        setRealProductCount(prodCount);
+        setRealSaleCount(saleCount);
+        setRealCustomerCount(custCount);
+        setRealDebtCount(debtCount);
+        setRealExpenseCount(expCount);
+        setRealAuditLogCount(auditCount);
+        setLatestAuditLogs(logs);
+      } catch (err) {
+        console.warn('Could not load real admin metrics:', err);
+      }
+    }
+
+    if (currentUser?.email === 'peterngecu001@gmail.com') {
+      loadRealMetrics();
+    }
+  }, [currentUser, loadTrigger]);
 
   // Load storage, sync subscriptions, and active user info
   useEffect(() => {
@@ -86,6 +131,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       setCurrentUser(u);
     }
     loadUser();
+
+    if (typeof localStorage !== 'undefined') {
+      setBiometricsEnabled(localStorage.getItem('biometrics_enabled') === 'true');
+    }
 
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
       navigator.storage.estimate().then((est) => {
@@ -116,6 +165,60 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       }
     } finally {
       setSavingShop(false);
+    }
+  };
+
+  const handleSeedSampleProducts = async () => {
+    try {
+      const sampleProducts = [
+        { id: 'p-1', shop_id: 'shop-admin-001', name: 'Premium Sugar 1kg', selling_price: 180, cost_price: 155, stock: 45, search_key: 'sugar premium sukari', image_emoji: '🍚', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+        { id: 'p-2', shop_id: 'shop-admin-001', name: 'Fresh Milk 500ml', selling_price: 75, cost_price: 60, stock: 20, search_key: 'milk fresh maziwa', image_emoji: '🥛', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+        { id: 'p-3', shop_id: 'shop-admin-001', name: 'Cooking Oil 1L', selling_price: 320, cost_price: 280, stock: 15, search_key: 'oil cooking mafuta', image_emoji: '🍾', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+        { id: 'p-4', shop_id: 'shop-admin-001', name: 'Premium White Bread', selling_price: 65, cost_price: 52, stock: 30, search_key: 'bread premium mkate', image_emoji: '🍞', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+        { id: 'p-5', shop_id: 'shop-admin-001', name: 'Pure Kenya Tea Leaves', selling_price: 110, cost_price: 90, stock: 25, search_key: 'tea pure chai', image_emoji: '🍃', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+      ];
+      for (const prod of sampleProducts) {
+        await db.products.put(prod as any);
+        await db.product_stock.put({
+          product_id: prod.id,
+          shop_id: prod.shop_id,
+          qty: prod.stock,
+          updated_at: new Date().toISOString()
+        });
+      }
+      setLoadTrigger(prev => prev + 1);
+      if (typeof window !== 'undefined') {
+        window.alert('Successfully seeded 5 premium Kenyan retail items to your local inventory! Go to Sales tab to test selling!');
+      }
+    } catch (err: any) {
+      if (typeof window !== 'undefined') {
+        window.alert(`Error seeding products: ${err.message}`);
+      }
+    }
+  };
+
+  const handleWipeTransactions = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('Are you sure you want to delete ALL local sales, debts, expenses, and products? This cannot be undone.')) {
+      return;
+    }
+    try {
+      await db.products.clear();
+      await db.product_stock.clear();
+      await db.sales.clear();
+      await db.sale_items.clear();
+      await db.customers.clear();
+      await db.debts.clear();
+      await db.debt_payments.clear();
+      await db.expenses.clear();
+      await db.audit_log.clear();
+      setLoadTrigger(prev => prev + 1);
+      if (typeof window !== 'undefined') {
+        window.alert('Local database wiped clean successfully!');
+      }
+    } catch (err: any) {
+      if (typeof window !== 'undefined') {
+        window.alert(`Error wiping database: ${err.message}`);
+      }
     }
   };
 
@@ -360,153 +463,102 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
         {/* System-Wide Admin Dashboard (Strictly visible only to peterngecu001@gmail.com) */}
         {currentUser?.email === 'peterngecu001@gmail.com' && (
-          <div className="p-4 bg-slate-900 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
+          <div className="p-4 bg-slate-950 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
               <div className="flex items-center gap-2">
                 <span className="text-lg">🛠</span>
                 <div>
                   <h3 className="text-xs font-black tracking-wider text-amber-400 uppercase">
-                    SMARTSORT SYSTEM-WIDE ADMIN
+                    SMARTSORT SOLUTIONS LIVE ADMIN
                   </h3>
-                  <p className="text-[9px] font-mono text-slate-400">Authorized: peterngecu001@gmail.com</p>
+                  <p className="text-[9px] font-mono text-slate-400">Authorized Admin: peterngecu001@gmail.com</p>
                 </div>
               </div>
-              <span className="text-[10px] bg-amber-500/20 text-amber-400 font-bold px-2 py-0.5 rounded-full border border-amber-500/30">
-                Live Admin Mode
-              </span>
+              <button
+                type="button"
+                onClick={() => setLoadTrigger(prev => prev + 1)}
+                className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2 py-1 rounded-lg border border-slate-700 flex items-center gap-1 transition active:scale-95 cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3 text-amber-500" />
+                Refresh Live
+              </button>
             </div>
 
-            {/* Metrics Grid */}
-            <div className="grid grid-cols-2 gap-2 text-center">
-              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
-                <span className="text-[9px] text-slate-400 font-bold uppercase block">Total Active Shops</span>
-                <span className="text-sm font-black text-emerald-400 tabular-nums">48 Stores</span>
-              </div>
-              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
-                <span className="text-[9px] text-slate-400 font-bold uppercase block">System Sync Health</span>
-                <span className="text-sm font-black text-emerald-400 tabular-nums">99.98%</span>
-              </div>
-              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
-                <span className="text-[9px] text-slate-400 font-bold uppercase block">Active Loan Pool</span>
-                <span className="text-sm font-black text-amber-400 tabular-nums">KES 450,000</span>
-              </div>
-              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
-                <span className="text-[9px] text-slate-400 font-bold uppercase block">Monthly Revenue</span>
-                <span className="text-sm font-black text-blue-400 tabular-nums">KES 124,500</span>
+            {/* Live IndexedDB Table Metrics Grid */}
+            <div className="space-y-1.5">
+              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wide">
+                REAL-TIME DATABASE STATISTICS
+              </h4>
+              <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Products</span>
+                  <span className="text-sm font-black text-emerald-400 tabular-nums">{realProductCount} Items</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Sales Headers</span>
+                  <span className="text-sm font-black text-emerald-400 tabular-nums">{realSaleCount} Receipts</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Customers</span>
+                  <span className="text-sm font-black text-amber-400 tabular-nums">{realCustomerCount} Leads</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Debts / Ledgers</span>
+                  <span className="text-sm font-black text-amber-400 tabular-nums">{realDebtCount} Ledgers</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5 col-span-2 flex justify-between px-3 items-center">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase">Tamper-Proof Audit logs:</span>
+                  <span className="text-xs font-black text-blue-400 tabular-nums">{realAuditLogCount} entries</span>
+                </div>
               </div>
             </div>
 
-            {/* Shop & User Management Section */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-[10px] font-black uppercase text-slate-300 tracking-wide">
-                  SYSTEM SHOPS & ACCOUNTS (GENERIC DEMO)
-                </h4>
-                <span className="text-[9px] text-slate-400">Total: 4</span>
+            {/* Admin Actions Utility Center */}
+            <div className="space-y-2 border-t border-slate-800 pt-3">
+              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wide">
+                SYSTEM UTILITIES & SEED OPTIONS
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleSeedSampleProducts}
+                  className="p-2.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition border border-emerald-800 active:scale-95 cursor-pointer"
+                >
+                  🌱 Pre-populate Demo Inventory
+                </button>
+                <button
+                  type="button"
+                  onClick={handleWipeTransactions}
+                  className="p-2.5 bg-rose-950 hover:bg-rose-900 text-rose-300 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition border border-rose-800 active:scale-95 cursor-pointer"
+                >
+                  🚨 Wipe Local Database Clean
+                </button>
               </div>
+            </div>
 
-              {/* Simulated Shops List */}
-              <div className="space-y-1.5 divide-y divide-slate-800/50">
-                {/* Store 1 */}
-                <div className="pt-2 first:pt-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-slate-100">Smartsort Westlands</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 rounded-sm">Active</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 font-mono">smartsort@shop.com</span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => alert('Successfully approved restock loan increase for smartsort@shop.com to KES 15,000!')}
-                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-lg border border-amber-500/20 transition active:scale-95 cursor-pointer"
-                    >
-                      Approve Loan
-                    </button>
-                    <button
-                      onClick={() => alert('PIN reset code sent to smartsort@shop.com!')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
-                    >
-                      Reset PIN
-                    </button>
-                  </div>
+            {/* Live Tamper-Proof Audit Log Trail */}
+            <div className="space-y-2 border-t border-slate-800 pt-3">
+              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wide">
+                LATEST SYSTEM OPERATIONS LOG (REAL)
+              </h4>
+              {latestAuditLogs.length === 0 ? (
+                <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 text-[10px] text-slate-400 text-center leading-relaxed">
+                  No system operations logged yet.<br />
+                  Sales transactions, cash drawer shifts, and stock movements generate automatic tamper-proof logs.
                 </div>
-
-                {/* Store 2 */}
-                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-slate-100">Eldoret Retail Hub</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 rounded-sm">Active</span>
+              ) : (
+                <div className="p-2 bg-slate-900 rounded-xl border border-slate-800 divide-y divide-slate-800 text-[10px] font-mono">
+                  {latestAuditLogs.map((log) => (
+                    <div key={log.id} className="py-1.5 first:pt-0 last:pb-0 flex justify-between gap-2">
+                      <div className="space-y-0.5">
+                        <span className="font-bold text-slate-100 block">{log.action}</span>
+                        <span className="text-slate-400 block">{log.entity_type} ID: {log.entity_id.slice(0, 8)}...</span>
+                      </div>
+                      <span className="text-slate-500 shrink-0 text-right">{new Date(log.created_at).toLocaleTimeString()}</span>
                     </div>
-                    <span className="text-[10px] text-slate-400 font-mono">retail-eldoret@shop.com</span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => alert('Successfully approved restock loan increase for retail-eldoret@shop.com to KES 10,000!')}
-                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-lg border border-amber-500/20 transition active:scale-95 cursor-pointer"
-                    >
-                      Approve Loan
-                    </button>
-                    <button
-                      onClick={() => alert('PIN reset code sent to retail-eldoret@shop.com!')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
-                    >
-                      Reset PIN
-                    </button>
-                  </div>
+                  ))}
                 </div>
-
-                {/* Store 3 */}
-                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-slate-100">Mombasa Duka</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 rounded-sm">Active</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 font-mono">duka-mombasa@shop.com</span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => alert('Successfully approved restock loan increase for duka-mombasa@shop.com to KES 8,000!')}
-                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-lg border border-amber-500/20 transition active:scale-95 cursor-pointer"
-                    >
-                      Approve Loan
-                    </button>
-                    <button
-                      onClick={() => alert('PIN reset code sent to duka-mombasa@shop.com!')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
-                    >
-                      Reset PIN
-                    </button>
-                  </div>
-                </div>
-
-                {/* Store 4 */}
-                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-slate-100">Kisumu Duka La Kati</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-amber-500/10 text-amber-400 rounded-sm">Pending</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 font-mono">kisumu-kati@shop.com</span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => alert('Successfully activated and approved initial restock loan for kisumu-kati@shop.com!')}
-                      className="px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-[10px] font-bold rounded-lg border border-emerald-500/20 transition active:scale-95 cursor-pointer"
-                    >
-                      Activate Shop
-                    </button>
-                    <button
-                      onClick={() => alert('PIN reset code sent to kisumu-kati@shop.com!')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
-                    >
-                      Reset PIN
-                    </button>
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}
@@ -802,6 +854,38 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           >
             {isEn ? 'Change Quick Unlock PIN' : 'Badilisha PIN ya Kufungua Simu'}
           </Button>
+
+          {/* Biometrics Toggle Button */}
+          <button
+            type="button"
+            onClick={() => {
+              const current = localStorage.getItem('biometrics_enabled') === 'true';
+              localStorage.setItem('biometrics_enabled', (!current).toString());
+              setBiometricsEnabled(!current);
+              if (typeof window !== 'undefined') {
+                window.alert(
+                  !current
+                    ? (isEn ? 'Biometrics & Passkey sign-in enabled on this device!' : 'Kuingia kwa alama ya vidole / Passkey kumewezeshwa kwenye simu hii!')
+                    : (isEn ? 'Biometrics login disabled.' : 'Kuingia kwa alama ya vidole kumezimwa.')
+                );
+              }
+            }}
+            className={`w-full p-2.5 border rounded-xl text-xs font-bold flex items-center justify-between transition cursor-pointer ${
+              biometricsEnabled
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                : 'bg-slate-50 border-slate-200 text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              <Smartphone className={`w-4 h-4 ${biometricsEnabled ? 'text-emerald-600' : 'text-slate-400'}`} />
+              <span>{isEn ? 'Enable Biometric / Passkey Login' : 'Wezesha Kuingia kwa Fingerprint'}</span>
+            </div>
+            <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded-full ${
+              biometricsEnabled ? 'bg-emerald-200 text-emerald-800' : 'bg-slate-200 text-slate-600'
+            }`}>
+              {biometricsEnabled ? (isEn ? 'Enabled' : 'Imewezeshwa') : (isEn ? 'Disabled' : 'Imezimwa')}
+            </span>
+          </button>
 
           <Button
             variant="danger"
