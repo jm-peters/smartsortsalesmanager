@@ -1588,30 +1588,30 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
   }
 
   const now = serverNow();
-  const shopId = 'shop-demo-kenya-001';
-  const userId = 'user-owner-001';
+  const shopId = 'shop-admin-001';
+  const userId = 'user-admin-001';
 
-  // Default demo PIN: "1234"
-  const demoPinHash = '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4';
+  // Hashed PIN of "2540" -> 13990937ab8ca4413751a9012a31255e72a18ba3ac8d5c83dd511df50cf2a3e1
+  const adminPinHash = '13990937ab8ca4413751a9012a31255e72a18ba3ac8d5c83dd511df50cf2a3e1';
 
   const shop: Shop = {
     shop_id: shopId,
-    shop_name: 'SmartSort Duka la Jamii',
-    owner_name: 'Peter Mwangi',
-    phone: '0712345678',
-    till_number: '542190',
+    shop_name: 'Smartsort solutions',
+    owner_name: 'Peter Ngecu',
+    phone: '0722334455',
+    till_number: '6997912',
     role: 'owner',
     user_id: userId,
     avatar_emoji: '🏪',
-    tagline: 'Your reliable neighborhood duka',
-    contact_email: 'peter@duka.co.ke',
+    tagline: 'Leading Kenyan Retail Solutions',
+    contact_email: 'peterngecu001@gmail.com',
     county: 'Nairobi',
     sub_county: 'Westlands',
-    town: 'Kangemi',
-    landmark: 'Near Kangemi stage, opposite church',
-    pin_hash: demoPinHash,
+    town: 'Westlands',
+    landmark: 'Smartsort HQ',
+    pin_hash: adminPinHash,
     default_credit_limit: toKES(3000),
-    receipt_footer: 'Karibu tena! Tunafungua 6am - 9pm.',
+    receipt_footer: 'Powered by Smartsort Solutions',
     business_cutoff_hour: 22,
     plan_code: 'daily_30',
     plan_name: 'Daily Access Plan (KES 30/day)',
@@ -1626,15 +1626,15 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
   const user: ShopUser = {
     id: userId,
     shop_id: shopId,
-    name: 'Peter Mwangi',
-    username: 'petermwangi',
-    email: 'peter@duka.co.ke',
-    phone: '0712345678',
+    name: 'Peter Ngecu',
+    username: 'peterngecu',
+    email: 'peterngecu001@gmail.com',
+    phone: '0722334455',
     role: 'owner',
-    pin_hash: demoPinHash,
-    password_hash: 'Password123',
-    onboarding_step: 'contact',
-    profile_completed_at: null,
+    pin_hash: adminPinHash,
+    password_hash: 'SmartsortAdmin2026!',
+    onboarding_step: 'complete', // pre-completed profile for admin test account demo
+    profile_completed_at: '2026-03-01T08:00:00Z',
     is_active: true,
     created_at: '2026-03-01T08:00:00Z',
     updated_at: now,

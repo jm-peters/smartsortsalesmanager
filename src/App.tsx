@@ -74,11 +74,10 @@ export default function App() {
         const existingUser = await getShopUser();
         const existingShop = await getShopMeta();
         if (!existingUser) {
-          // Seed initial Kenyan duka data
-          const seeded = await initializeDefaultDatabase();
-          setUser(seeded.user);
-          setShop(seeded.shop);
-          setUserRole(seeded.user.role);
+          // Pre-seed default database in background (including admin shop/user)
+          await initializeDefaultDatabase();
+          setUser(null);
+          setShop(null);
         } else {
           // Shop already setup, await PIN or password unlock
           setShop(existingShop);
@@ -133,8 +132,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col items-center">
-      {/* Mobile Shell Wrapper (max 420px mobile viewport) */}
-      <div className="w-full max-w-[420px] bg-slate-50 min-h-screen shadow-2xl flex flex-col relative">
+      {/* Responsive Shell Wrapper (supports mobile, tablet, and laptop) */}
+      <div className="w-full max-w-[420px] sm:max-w-[480px] md:max-w-[768px] lg:max-w-[1024px] xl:max-w-[1200px] bg-slate-50 min-h-screen shadow-2xl flex flex-col relative">
         {/* Top Header */}
         <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-3 py-2 flex items-center justify-between gap-2 shadow-2xs">
           {/* Left: Avatar button (tap to open Profile) + Shop Name */}

@@ -7,6 +7,7 @@ import {
   Database,
   RefreshCw,
   Download,
+  Upload,
   Lock,
   Check,
   Info,
@@ -142,6 +143,86 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         window.alert(isEn ? 'Error downloading backup.' : 'Kosa katika kupakua backup.');
       }
     }
+  };
+
+  // Import full JSON Backup (Restores local IndexedDB)
+  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        if (!text) throw new Error('Empty file');
+        const data = JSON.parse(text);
+
+        // Basic verification
+        if (!data.meta || !data.products) {
+          throw new Error('Invalid backup file format');
+        }
+
+        const confirmRestore = window.confirm(
+          isEn
+            ? 'Are you sure you want to restore this backup? This will replace all current duka records on this device!'
+            : 'Je, una uhakika unataka kurejesha nakala hii ya backup? Hii itafuta na kubadilisha rekodi zote za sasa kwenye kifaa hiki!'
+        );
+
+        if (!confirmRestore) return;
+
+        // Perform transactional clear and restore
+        await db.transaction('rw', [
+          db.meta,
+          db.products,
+          db.product_stock,
+          db.sales,
+          db.sale_items,
+          db.customers,
+          db.debts,
+          db.debt_payments,
+          db.expenses,
+          db.cash_sessions,
+        ], async () => {
+          await db.meta.clear();
+          await db.products.clear();
+          await db.product_stock.clear();
+          await db.sales.clear();
+          await db.sale_items.clear();
+          await db.customers.clear();
+          await db.debts.clear();
+          await db.debt_payments.clear();
+          await db.expenses.clear();
+          await db.cash_sessions.clear();
+
+          if (data.meta) await db.meta.bulkPut(data.meta);
+          if (data.products) await db.products.bulkPut(data.products);
+          if (data.stocks) await db.product_stock.bulkPut(data.stocks);
+          if (data.sales) await db.sales.bulkPut(data.sales);
+          if (data.sale_items) await db.sale_items.bulkPut(data.sale_items);
+          if (data.customers) await db.customers.bulkPut(data.customers);
+          if (data.debts) await db.debts.bulkPut(data.debts);
+          if (data.debt_payments) await db.debt_payments.bulkPut(data.debt_payments);
+          if (data.expenses) await db.expenses.bulkPut(data.expenses);
+          if (data.cash_sessions) await db.cash_sessions.bulkPut(data.cash_sessions);
+        });
+
+        window.alert(
+          isEn
+            ? 'Backup restored successfully! The application will now reload to apply changes.'
+            : 'Kurejesha nakala ya backup kumekamilika kikamilifu! Mfumo utajipakia upya sasa hivi.'
+        );
+        window.location.reload();
+      } catch (err: any) {
+        window.alert(
+          isEn
+            ? `Failed to restore backup: ${err.message || 'Invalid file format'}`
+            : `Kosa katika kurejesha backup: ${err.message || 'Mfumo hauwezi kusoma faili hili'}`
+        );
+      }
+    };
+    reader.readAsText(file);
+    // Reset file input so same file can be imported again
+    e.target.value = '';
   };
 
   // Frequently Asked Questions
@@ -453,14 +534,27 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               : 'Miamala ya duka lako inahifadhiwa moja kwa moja kwenye simu yako. Unaweza kupakua nakala ya backup ya JSON wakati wowote bila kuathiri data zilizopo.'}
           </p>
 
-          <button
-            type="button"
-            onClick={handleExportBackup}
-            className="w-full p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
-          >
-            <Download className="w-4 h-4 text-emerald-600" />
-            {isEn ? 'Download Shop Data Backup (.json)' : 'Pakua Nakala ya Data (Backup .json)'}
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleExportBackup}
+              className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer"
+            >
+              <Download className="w-4 h-4 text-emerald-600" />
+              {isEn ? 'Download Backup (.json)' : 'Pakua Nakala (Backup .json)'}
+            </button>
+
+            <label className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer text-center">
+              <Upload className="w-4 h-4 text-emerald-600" />
+              <span>{isEn ? 'Restore Backup (.json)' : 'Rejesha Nakala (Import .json)'}</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={handleImportBackup}
+                className="hidden"
+              />
+            </label>
+          </div>
         </div>
 
         {/* Frequently Asked Questions (Expandable Accordion) */}

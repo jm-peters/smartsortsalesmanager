@@ -27,8 +27,8 @@ interface SubscriptionPaymentModalProps {
 
 const DURATIONS = [
   { days: 1, labelEn: '1 Day', labelSw: 'Siku 1', kes: 30, badge: 'Daily' },
-  { days: 7, labelEn: '7 Days', labelSw: 'Siku 7', kes: 210, badge: '1 Week' },
-  { days: 30, labelEn: '30 Days', labelSw: 'Siku 30', kes: 900, badge: 'Best Value' },
+  { days: 7, labelEn: '7 Days', labelSw: 'Siku 7', kes: 180, badge: '1 Week' },
+  { days: 30, labelEn: '30 Days', labelSw: 'Siku 30', kes: 750, badge: 'Best Value' },
 ];
 
 export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> = ({
@@ -39,7 +39,7 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
   onSubscriptionUpdated,
 }) => {
   const isEn = language === 'en';
-  const tillNumber = '542190'; // Official SmartSort Buy Goods Till Number
+  const tillNumber = '6997912'; // Official SmartSort Buy Goods Till Number
 
   const [selectedPlanIndex, setSelectedPlanIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<'stk' | 'till'>('stk');

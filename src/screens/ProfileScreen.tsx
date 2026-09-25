@@ -87,6 +87,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onNavigateTab,
 }) => {
   const t = translations[language];
+  const isPeterNgecu = user?.email?.trim().toLowerCase() === 'peterngecu001@gmail.com';
 
   // Repayment & Instalments plan helper
   const getRepaymentPlan = (amount: number) => {
@@ -916,7 +917,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </div>
 
           {/* Admin Dashboard / Developer Portal */}
-          {isAdminMode && (
+          {isAdminMode && isPeterNgecu && (
             <div className="p-4 bg-slate-900 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black tracking-wider text-amber-400 uppercase">
@@ -1323,8 +1324,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </button>
         </div>
 
-        {/* Admin Portal Dashboard Switcher (Hidden to standard users unless developer/admin is logged in or triple taps copyright) */}
-        {(user.email === 'peterngecu001@gmail.com' || shop.contact_email === 'peterngecu001@gmail.com' || copyrightTaps >= 3) && (
+        {/* Admin Portal Dashboard Switcher (Hidden to standard users, strictly authorized for peterngecu001@gmail.com) */}
+        {isPeterNgecu && (
           <div className="pt-4 flex justify-center pb-2">
             <button
               type="button"
@@ -1351,6 +1352,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </div>
           <div
             onClick={() => {
+              if (!isPeterNgecu) return; // Strictly restricted to peterngecu001@gmail.com
               const nextTaps = copyrightTaps + 1;
               setCopyrightTaps(nextTaps);
               if (nextTaps === 3) {
@@ -1361,7 +1363,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               }
             }}
             className="cursor-pointer active:opacity-60 hover:text-slate-500 transition py-1"
-            title="Double check credentials or tap 3 times to unlock developer controls"
+            title={isPeterNgecu ? "Tap 3 times to unlock developer controls" : undefined}
           >
             Copyright © 2026 SmartSort Solutions Company
           </div>
