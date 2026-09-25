@@ -102,6 +102,20 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     };
   }, []);
 
+  // Forced wipe of old accounts once for testing fresh connection
+  useEffect(() => {
+    async function wipeOldAccountsOnce() {
+      if (typeof localStorage !== 'undefined' && !localStorage.getItem('smartsort_accounts_wiped_v3')) {
+        await clearDatabaseForFreshStart();
+        localStorage.removeItem('smartsort_authenticated');
+        localStorage.removeItem('smartsort_session');
+        localStorage.setItem('smartsort_accounts_wiped_v3', 'true');
+        setAuthMode('signup'); // Default to signup screen for testing fresh flows
+      }
+    }
+    wipeOldAccountsOnce();
+  }, []);
+
   // Check if existing user exists in local Dexie
   useEffect(() => {
     async function checkExisting() {
@@ -187,10 +201,81 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         return;
       }
 
-      // Simulate safe resolution with slight jitter
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+      const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
 
-      // Verify against local user or default seeded user
+      if (url && anonKey && idInput.includes('@')) {
+        try {
+          // Attempt real Supabase password authentication
+          const resp = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: anonKey,
+            },
+            body: JSON.stringify({
+              email: idInput,
+              password: passInput,
+            }),
+          });
+
+          if (resp.ok) {
+            const data = await resp.json();
+            const sessionData = {
+              accessToken: data.access_token,
+              refreshToken: data.refresh_token,
+              expiresAt: Date.now() + (data.expires_in * 1000),
+              userId: data.user?.id,
+              email: data.user?.email,
+              pin_hash: data.user?.user_metadata?.pin_hash,
+            };
+
+            localStorage.setItem('smartsort_session', JSON.stringify(sessionData));
+            localStorage.setItem('smartsort_authenticated', 'true');
+
+            // Pull or create default local duka models matching this user
+            let shop = await getShopMeta();
+            if (!shop) {
+              const seeded = await initializeDefaultDatabase();
+              shop = seeded.shop;
+            }
+
+            const updatedUser: ShopUser = {
+              id: data.user?.id || 'user-owner-001',
+              shop_id: shop.shop_id,
+              name: data.user?.user_metadata?.full_name || 'Smartsort User',
+              username: data.user?.user_metadata?.username || idInput.split('@')[0],
+              email: data.user?.email || idInput,
+              phone: data.user?.user_metadata?.phone || '',
+              role: 'owner',
+              pin_hash: data.user?.user_metadata?.pin_hash || '',
+              onboarding_step: 'complete',
+              profile_completed_at: data.user?.created_at || serverNow(),
+              is_active: true,
+              created_at: data.user?.created_at || serverNow(),
+              updated_at: serverNow(),
+            };
+
+            await db.meta.put({ key: 'user_info', value: updatedUser });
+
+            if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+              window.navigator.vibrate(20);
+            }
+
+            onAuthenticated(updatedUser, shop);
+            return;
+          } else {
+            const err = await resp.json().catch(() => ({}));
+            setLoginError(err.error_description || err.msg || t.invalidCredentials);
+            setIsLoggingIn(false);
+            return;
+          }
+        } catch (supabaseErr: any) {
+          console.warn('Supabase auth failed, falling back to local credentials:', supabaseErr);
+        }
+      }
+
+      // Local/Offline Fallback Credentials Verification
       let user = await getShopUser();
       let shop = await getShopMeta();
 
@@ -218,9 +303,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
         const safeUser: ShopUser = {
           ...user,
-          username: user.username || 'peterngecu',
-          email: user.email || 'peterngecu001@gmail.com',
-          onboarding_step: user.onboarding_step || 'contact',
+          username: user.username || 'smartsort',
+          email: user.email || 'smartsort@shop.com',
+          onboarding_step: user.onboarding_step || 'complete',
           role: user.role || 'owner',
         };
         onAuthenticated(safeUser, shop);
@@ -372,23 +457,19 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setSignupStep(5);
   };
 
-  // Send OTP SMS via Supabase (or fallback-simulate in offline mode)
+  // Send OTP SMS/Email via Supabase (or fallback-simulate in offline mode)
   const handleSendOtp = async () => {
-    if (!phoneForOtp.trim()) {
-      setOtpError(language === 'en' ? 'Please enter your phone number.' : 'Tafadhali weka nambari yako ya simu.');
+    const targetEmail = email.trim().toLowerCase();
+    if (!targetEmail) {
+      setOtpError(language === 'en' ? 'Please enter your email address first.' : 'Tafadhali weka barua pepe yako kwanza.');
       return;
     }
 
     setOtpError('');
     setIsSendingOtp(true);
 
-    const normPhone = phoneForOtp.replace(/\D/g, '');
-    const cleanPhone = normPhone.startsWith('0')
-      ? `254${normPhone.slice(1)}`
-      : normPhone;
-
-    const url = (import.meta as any).env?.VITE_SUPABASE_URL || '';
-    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
 
     if (url && anonKey) {
       try {
@@ -399,8 +480,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             apikey: anonKey,
           },
           body: JSON.stringify({
-            phone: `+${cleanPhone}`,
-            channel: 'sms',
+            email: targetEmail,
           }),
         });
 
@@ -413,8 +493,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         if (typeof window !== 'undefined') {
           window.alert(
             language === 'en'
-              ? `Verification OTP sent successfully via Supabase SMS to +${cleanPhone}!`
-              : `Supabase SMS OTP imetumwa kikamilifu kwa +${cleanPhone}!`
+              ? `Verification OTP code successfully sent to email: ${targetEmail}!`
+              : `Msimbo wa uthibitisho (OTP) umetumwa kikamilifu kwa barua pepe: ${targetEmail}!`
           );
         }
       } catch (err: any) {
@@ -430,8 +510,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         if (typeof window !== 'undefined') {
           window.alert(
             language === 'en'
-              ? `[Smartsort SMS] Your secure verification OTP is 2540. Enter this code to verify phone +${cleanPhone}!`
-              : `[Smartsort SMS] OTP yako ya siri ni 2540. Weka msimbo huu ili kuthibitisha simu +${cleanPhone}!`
+              ? `[Smartsort Mail] Your secure email verification OTP is 2540. Enter this code to verify ${targetEmail}!`
+              : `[Smartsort Mail] OTP yako ya barua pepe ni 2540. Weka msimbo huu ili kuthibitisha ${targetEmail}!`
           );
         }
       }, 800);
@@ -448,28 +528,41 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setOtpError('');
     setIsVerifyingOtp(true);
 
-    const normPhone = phoneForOtp.replace(/\D/g, '');
-    const cleanPhone = normPhone.startsWith('0')
-      ? `254${normPhone.slice(1)}`
-      : normPhone;
-
-    const url = (import.meta as any).env?.VITE_SUPABASE_URL || '';
-    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+    const targetEmail = email.trim().toLowerCase();
+    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
 
     if (url && anonKey) {
       try {
-        const resp = await fetch(`${url}/auth/v1/verify`, {
+        // Try standard signup verify first
+        let resp = await fetch(`${url}/auth/v1/verify`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             apikey: anonKey,
           },
           body: JSON.stringify({
-            type: 'sms',
-            phone: `+${cleanPhone}`,
+            type: 'signup',
+            email: targetEmail,
             token: otpToken.trim(),
           }),
         });
+
+        // Try 'email' or 'magiclink' verify fallback if signup type fails (depending on Supabase setup)
+        if (!resp.ok) {
+          resp = await fetch(`${url}/auth/v1/verify`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: anonKey,
+            },
+            body: JSON.stringify({
+              type: 'email',
+              email: targetEmail,
+              token: otpToken.trim(),
+            }),
+          });
+        }
 
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -477,16 +570,16 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         }
 
         // Successfully verified! Now proceed to complete local database setup
-        await handleSaveModelsAndTransition(cleanPhone);
+        await handleSaveModelsAndTransition('');
       } catch (err: any) {
         setOtpError(err.message || 'Verification failed. Please try again.');
         setIsVerifyingOtp(false);
       }
     } else {
-      // Offline/Demo validation: checks if code is 2540 (our Kenyan PIN code) or 123456
+      // Offline/Demo validation: checks if code is 2540 or 123456
       setTimeout(async () => {
         if (otpToken.trim() === '2540' || otpToken.trim() === '123456' || otpToken.trim() === '254000') {
-          await handleSaveModelsAndTransition(cleanPhone);
+          await handleSaveModelsAndTransition('');
         } else {
           setOtpError(language === 'en' ? 'Invalid verification code. Use 2540.' : 'Msimbo usio sahihi. Tumia 2540.');
           setIsVerifyingOtp(false);
@@ -567,6 +660,31 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     const finalUser = await saveShopUser({
       pin_hash: hashed,
     });
+
+    // Handle Supabase PIN syncing:
+    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+    if (url && anonKey) {
+      try {
+        const sessionStr = localStorage.getItem('smartsort_session');
+        const session = sessionStr ? JSON.parse(sessionStr) : null;
+        const token = session?.accessToken || anonKey;
+
+        await fetch(`${url}/auth/v1/user`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: anonKey,
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            data: { pin_hash: hashed }
+          })
+        });
+      } catch (e) {
+        console.warn('Could not sync PIN hash to Supabase:', e);
+      }
+    }
 
     onAuthenticated(finalUser, tempUserForPin.shop);
   };
@@ -999,7 +1117,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               </div>
             )}
 
-            {/* Step 5: Phone Number & Supabase SMS OTP Verification */}
+            {/* Step 5: Email & Supabase Email OTP Verification */}
             {signupStep === 5 && (
               <div className="space-y-4">
                 {otpError && (
@@ -1012,20 +1130,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   <div className="space-y-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">
-                        {language === 'en' ? 'Phone Number (WhatsApp/SMS)' : 'Nambari ya Simu (WhatsApp/SMS)'} *
+                        {language === 'en' ? 'Verify Registered Email Address' : 'Thibitisha Barua Pepe Yako'}
                       </label>
                       <input
-                        type="tel"
-                        value={phoneForOtp}
-                        onChange={(e) => setPhoneForOtp(e.target.value.replace(/[^0-9+]/g, ''))}
-                        placeholder="e.g. 0757706978"
-                        className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
-                        autoFocus
+                        type="email"
+                        value={email}
+                        disabled
+                        className="w-full h-11 px-3 text-sm font-semibold bg-slate-100 border border-slate-300 rounded-xl text-slate-500 cursor-not-allowed"
                       />
-                      <span className="text-[10px] text-slate-400">
+                      <span className="text-[10px] text-slate-400 block mt-1">
                         {language === 'en'
-                          ? 'Enter your phone number to receive a secure Supabase SMS verification code.'
-                          : 'Weka nambari yako ili upokee msimbo salama wa uthibitisho wa Supabase.'}
+                          ? 'This is the email address that will receive the secure Supabase OTP code.'
+                          : 'Hii ndiyo barua pepe itakayopokea msimbo salama wa uthibitisho (OTP) wa Supabase.'}
                       </span>
                     </div>
 
@@ -1043,11 +1159,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                         {isSendingOtp ? (
                           <>
                             <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-1.5" />
-                            <span>{language === 'en' ? 'Sending SMS...' : 'Inatuma SMS...'}</span>
+                            <span>{language === 'en' ? 'Sending OTP...' : 'Inatuma OTP...'}</span>
                           </>
                         ) : (
                           <>
-                            <span>{language === 'en' ? 'Send SMS OTP' : 'Tuma SMS OTP'}</span>
+                            <span>{language === 'en' ? 'Send Email OTP' : 'Tuma OTP kwa Email'}</span>
                           </>
                         )}
                       </Button>
@@ -1070,8 +1186,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       />
                       <span className="text-[10px] text-slate-400 block text-center mt-1">
                         {language === 'en'
-                          ? `Code sent to phone number. Use 2540 as the simulation code if testing offline.`
-                          : `Msimbo umetumwa kwa nambari yako. Tumia 2540 kama msimbo wa majaribio ukiwa nje ya mtandao.`}
+                          ? `Code sent to ${email}. Use 2540 as the simulation code if testing offline.`
+                          : `Msimbo umetumwa kwa ${email}. Tumia 2540 kama msimbo wa majaribio ukiwa nje ya mtandao.`}
                       </span>
                     </div>
 

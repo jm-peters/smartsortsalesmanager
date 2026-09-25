@@ -17,8 +17,8 @@ export class SupabaseAdapter implements RemoteAdapter {
   private anonKey: string;
 
   constructor() {
-    this.url = (import.meta as any).env?.VITE_SUPABASE_URL || '';
-    this.anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+    this.url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    this.anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
   }
 
   private isConfigured(): boolean {
