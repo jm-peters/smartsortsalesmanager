@@ -304,11 +304,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
 
       // Check local duplicate / reserved usernames & emails
-      if (u === 'petermwangi' || u === 'peter' || u === 'admin' || u === 'developer') {
+      if (u === 'smartsort' || u === 'admin' || u === 'developer') {
         setSignupError(t.usernameTaken || 'Username is already taken. Please choose another.');
         return;
       }
-      if (em === 'peter@duka.co.ke') {
+      if (em === 'smartsort@shop.com') {
         setSignupError('Email is already registered. Please login or choose another.');
         return;
       }
@@ -577,7 +577,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     type="text"
                     value={loginIdentifier}
                     onChange={(e) => setLoginIdentifier(e.target.value)}
-                    placeholder="petermwangi / peter@duka.co.ke"
+                    placeholder="smartsort / smartsort@shop.com"
                     className="w-full h-11 pl-9 pr-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
                     autoCapitalize="none"
                     autoCorrect="off"

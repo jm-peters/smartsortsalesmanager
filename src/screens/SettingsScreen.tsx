@@ -16,6 +16,9 @@ import {
   ChevronUp,
   ShieldCheck,
   Wifi,
+  Users,
+  TrendingUp,
+  Phone,
 } from 'lucide-react';
 import {
   db,
@@ -67,14 +70,23 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   // Storage estimation
   const [storageEstimate, setStorageEstimate] = useState<{ usedMB: string; quotaMB: string } | null>(null);
 
+  // Load Active Shop User info for admin verification
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
   // PIN Change Sheet
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [pinStep, setPinStep] = useState<'enter' | 'confirm'>('enter');
 
-  // Load storage & sync subscriptions
+  // Load storage, sync subscriptions, and active user info
   useEffect(() => {
+    async function loadUser() {
+      const u = await getShopUser();
+      setCurrentUser(u);
+    }
+    loadUser();
+
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
       navigator.storage.estimate().then((est) => {
         const used = est.usage ? (est.usage / (1024 * 1024)).toFixed(1) : '0';
@@ -330,6 +342,175 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       </div>
 
       <div className="p-4 space-y-4">
+        {/* Support Callout Banner (Visible to all users) */}
+        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-3">
+          <Phone className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <h4 className="text-xs font-bold text-emerald-900">
+              {isEn ? 'Need Assistance / Customer Support?' : 'Unahitaji Msaada au Ushauri?'}
+            </h4>
+            <p className="text-[11px] text-emerald-800 leading-relaxed">
+              {isEn 
+                ? 'Contact Smartsort Support for any inquiries, custom settings, or active plans via Call or WhatsApp: '
+                : 'Wasiliana na Smartsort Support kwa maswali, mipangilio ya duka lako, au malipaji kupitia Piga au WhatsApp: '}
+              <a href="tel:0757706978" className="font-black text-emerald-950 underline hover:text-emerald-900">0757706978</a>
+            </p>
+          </div>
+        </div>
+
+        {/* System-Wide Admin Dashboard (Strictly visible only to peterngecu001@gmail.com) */}
+        {currentUser?.email === 'peterngecu001@gmail.com' && (
+          <div className="p-4 bg-slate-900 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🛠</span>
+                <div>
+                  <h3 className="text-xs font-black tracking-wider text-amber-400 uppercase">
+                    SMARTSORT SYSTEM-WIDE ADMIN
+                  </h3>
+                  <p className="text-[9px] font-mono text-slate-400">Authorized: peterngecu001@gmail.com</p>
+                </div>
+              </div>
+              <span className="text-[10px] bg-amber-500/20 text-amber-400 font-bold px-2 py-0.5 rounded-full border border-amber-500/30">
+                Live Admin Mode
+              </span>
+            </div>
+
+            {/* Metrics Grid */}
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block">Total Active Shops</span>
+                <span className="text-sm font-black text-emerald-400 tabular-nums">48 Stores</span>
+              </div>
+              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block">System Sync Health</span>
+                <span className="text-sm font-black text-emerald-400 tabular-nums">99.98%</span>
+              </div>
+              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block">Active Loan Pool</span>
+                <span className="text-sm font-black text-amber-400 tabular-nums">KES 450,000</span>
+              </div>
+              <div className="p-2.5 bg-slate-800/80 border border-slate-700/50 rounded-xl space-y-0.5">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block">Monthly Revenue</span>
+                <span className="text-sm font-black text-blue-400 tabular-nums">KES 124,500</span>
+              </div>
+            </div>
+
+            {/* Shop & User Management Section */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-[10px] font-black uppercase text-slate-300 tracking-wide">
+                  SYSTEM SHOPS & ACCOUNTS (GENERIC DEMO)
+                </h4>
+                <span className="text-[9px] text-slate-400">Total: 4</span>
+              </div>
+
+              {/* Simulated Shops List */}
+              <div className="space-y-1.5 divide-y divide-slate-800/50">
+                {/* Store 1 */}
+                <div className="pt-2 first:pt-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-slate-100">Smartsort Westlands</span>
+                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 rounded-sm">Active</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono">smartsort@shop.com</span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => alert('Successfully approved restock loan increase for smartsort@shop.com to KES 15,000!')}
+                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-lg border border-amber-500/20 transition active:scale-95 cursor-pointer"
+                    >
+                      Approve Loan
+                    </button>
+                    <button
+                      onClick={() => alert('PIN reset code sent to smartsort@shop.com!')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
+                    >
+                      Reset PIN
+                    </button>
+                  </div>
+                </div>
+
+                {/* Store 2 */}
+                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-slate-100">Eldoret Retail Hub</span>
+                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 rounded-sm">Active</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono">retail-eldoret@shop.com</span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => alert('Successfully approved restock loan increase for retail-eldoret@shop.com to KES 10,000!')}
+                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-lg border border-amber-500/20 transition active:scale-95 cursor-pointer"
+                    >
+                      Approve Loan
+                    </button>
+                    <button
+                      onClick={() => alert('PIN reset code sent to retail-eldoret@shop.com!')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
+                    >
+                      Reset PIN
+                    </button>
+                  </div>
+                </div>
+
+                {/* Store 3 */}
+                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-slate-100">Mombasa Duka</span>
+                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 rounded-sm">Active</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono">duka-mombasa@shop.com</span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => alert('Successfully approved restock loan increase for duka-mombasa@shop.com to KES 8,000!')}
+                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-lg border border-amber-500/20 transition active:scale-95 cursor-pointer"
+                    >
+                      Approve Loan
+                    </button>
+                    <button
+                      onClick={() => alert('PIN reset code sent to duka-mombasa@shop.com!')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
+                    >
+                      Reset PIN
+                    </button>
+                  </div>
+                </div>
+
+                {/* Store 4 */}
+                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-slate-100">Kisumu Duka La Kati</span>
+                      <span className="text-[9px] px-1.5 py-0.2 bg-amber-500/10 text-amber-400 rounded-sm">Pending</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono">kisumu-kati@shop.com</span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => alert('Successfully activated and approved initial restock loan for kisumu-kati@shop.com!')}
+                      className="px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-[10px] font-bold rounded-lg border border-emerald-500/20 transition active:scale-95 cursor-pointer"
+                    >
+                      Activate Shop
+                    </button>
+                    <button
+                      onClick={() => alert('PIN reset code sent to kisumu-kati@shop.com!')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold rounded-lg border border-slate-700 transition active:scale-95 cursor-pointer"
+                    >
+                      Reset PIN
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Shop Info Card */}
         <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
           <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
