@@ -1505,18 +1505,7 @@ export interface StaffAttendant {
 
 export async function getStaffAttendants(): Promise<StaffAttendant[]> {
   const meta = await db.meta.get('staff_attendants');
-  return (
-    meta?.value || [
-      {
-        id: 'staff-demo-001',
-        name: 'Smartsort Attendant',
-        phone: '0757706978',
-        role: 'attendant',
-        pin_hash: '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4',
-        created_at: '2026-03-01T08:00:00Z',
-      },
-    ]
-  );
+  return meta?.value || [];
 }
 
 export async function addStaffAttendant(

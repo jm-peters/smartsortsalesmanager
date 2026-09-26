@@ -577,8 +577,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             <input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+              onChange={(e) => isOwner && setName(e.target.value)}
+              readOnly={!isOwner}
+              className={`w-full h-11 px-3 text-sm font-semibold border rounded-xl focus:outline-none ${
+                isOwner
+                  ? 'bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500'
+                  : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+              }`}
             />
           </div>
 
@@ -589,22 +594,33 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             <input
               type="text"
               value={till}
-              onChange={(e) => setTill(e.target.value)}
+              onChange={(e) => isOwner && setTill(e.target.value)}
+              readOnly={!isOwner}
               placeholder={isEn ? 'Example: 542190' : 'Mfano: 542190'}
-              className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+              className={`w-full h-11 px-3 text-sm font-semibold border rounded-xl focus:outline-none ${
+                isOwner
+                  ? 'bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500'
+                  : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+              }`}
             />
           </div>
 
-          <Button
-            variant="gradient"
-            size="md"
-            fullWidth
-            disabled={savingShop}
-            onClick={handleSaveShopInfo}
-          >
-            <Check className="w-4 h-4 mr-1" />
-            {isEn ? 'Save Shop Information' : 'Hifadhi Taarifa za Duka'}
-          </Button>
+          {isOwner ? (
+            <Button
+              variant="gradient"
+              size="md"
+              fullWidth
+              disabled={savingShop}
+              onClick={handleSaveShopInfo}
+            >
+              <Check className="w-4 h-4 mr-1" />
+              {isEn ? 'Save Shop Information' : 'Hifadhi Taarifa za Duka'}
+            </Button>
+          ) : (
+            <p className="text-[10px] text-slate-400 font-bold text-center italic pt-1">
+              {isEn ? 'Only shop owners can edit shop information.' : 'Wamiliki wa duka pekee wanaweza kuhariri taarifa.'}
+            </p>
+          )}
         </div>
 
         {/* Staff Role Switcher (§8.F) */}
@@ -632,11 +648,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={() => onChangeRole('owner')}
+              onClick={() => isOwner && onChangeRole('owner')}
+              disabled={!isOwner}
               className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 ${
                 isOwner
-                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20'
-                  : 'bg-white border-slate-200 text-slate-600'
+                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 cursor-pointer'
+                  : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
               }`}
             >
               <Shield className="w-5 h-5 text-blue-600" />
@@ -645,17 +662,23 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
             <button
               type="button"
-              onClick={() => onChangeRole('attendant')}
+              onClick={() => isOwner && onChangeRole('attendant')}
+              disabled={!isOwner}
               className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 ${
                 !isOwner
-                  ? 'bg-slate-100 border-slate-500 text-slate-900 ring-2 ring-slate-500/20'
-                  : 'bg-white border-slate-200 text-slate-600'
+                  ? 'bg-slate-100 border-slate-500 text-slate-900 ring-2 ring-slate-500/20 cursor-default'
+                  : 'bg-white border-slate-200 text-slate-600 cursor-pointer'
               }`}
             >
               <Smartphone className="w-5 h-5 text-slate-600" />
               <span>{isEn ? 'Attendant' : 'Mhudumu (Attendant)'}</span>
             </button>
           </div>
+          {!isOwner && (
+            <p className="text-[10px] text-amber-600 font-bold text-center mt-1">
+              {isEn ? 'User role cannot be changed by an Attendant.' : 'Nafasi ya mtumiaji haiwezi kubadilishwa na Mhudumu.'}
+            </p>
+          )}
         </div>
 
         {/* Language Switcher */}

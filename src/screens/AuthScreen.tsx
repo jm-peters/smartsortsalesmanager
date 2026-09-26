@@ -22,10 +22,12 @@ import {
   getShopMeta,
   saveShopMeta,
   clearDatabaseForFreshStart,
+  getStaffAttendants,
   type ShopUser,
   type Shop,
   type OnboardingStep,
   type UserRole,
+  type StaffAttendant,
 } from '../lib/db/local';
 import { toKES } from '../lib/money';
 import { verifyPin, hashPin } from '../lib/crypto';
@@ -90,6 +92,123 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [newDevicePin, setNewDevicePin] = useState('');
   const [tempUserForPin, setTempUserForPin] = useState<{ user: ShopUser; shop: Shop } | null>(null);
 
+  // Attendant Invite States
+  const [isAttendantInvite, setIsAttendantInvite] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteName, setInviteName] = useState('');
+  const [attendantPassword, setAttendantPassword] = useState('');
+  const [attendantConfirmPassword, setAttendantConfirmPassword] = useState('');
+  const [attendantError, setAttendantError] = useState('');
+  const [isActivatingAttendant, setIsActivatingAttendant] = useState(false);
+
+  const handleAttendantRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAttendantError('');
+    
+    if (attendantPassword.length < 8) {
+      setAttendantError(language === 'en' ? 'Password must be at least 8 characters long.' : 'Nenosiri lazima liwe na herufi 8 au zaidi.');
+      return;
+    }
+    
+    if (attendantPassword !== attendantConfirmPassword) {
+      setAttendantError(language === 'en' ? 'Passwords do not match.' : 'Nenosiri hailingani.');
+      return;
+    }
+
+    setIsActivatingAttendant(true);
+
+    try {
+      const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+      const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+
+      let attendantId = crypto.randomUUID();
+
+      if (url && anonKey) {
+        // Sign up with Supabase Auth
+        const resp = await fetch(`${url}/auth/v1/signup`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: anonKey,
+          },
+          body: JSON.stringify({
+            email: inviteEmail,
+            password: attendantPassword,
+            options: {
+              data: {
+                full_name: inviteName,
+                role: 'attendant',
+              }
+            }
+          }),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.msg || err.error_description || 'Supabase signup failed');
+        }
+
+        const data = await resp.json();
+        attendantId = data.user?.id || attendantId;
+      }
+
+      // Load existing shop, or generate default shop
+      let shop = await getShopMeta();
+      if (!shop) {
+        const seeded = await initializeDefaultDatabase();
+        shop = seeded.shop;
+      }
+
+      const now = serverNow();
+      const newAttendantUser: ShopUser = {
+        id: attendantId,
+        shop_id: shop.shop_id,
+        name: inviteName,
+        username: inviteEmail.split('@')[0],
+        email: inviteEmail,
+        phone: '',
+        role: 'attendant', // Attendant!
+        password_hash: attendantPassword,
+        onboarding_step: 'complete',
+        profile_completed_at: now,
+        is_active: true,
+        created_at: now,
+        updated_at: now,
+      };
+
+      // Write user to local metadata DB
+      await db.meta.put({ key: 'user_info', value: newAttendantUser });
+
+      // Save in attendants list as active
+      const existingAttendants = await getStaffAttendants();
+      const updatedList = existingAttendants.map((att: StaffAttendant) => 
+        att.phone.toLowerCase() === inviteEmail.toLowerCase()
+          ? { ...att, id: attendantId, pin_hash: 'needs_setup' }
+          : att
+      );
+      // Ensure it is added if not present
+      if (!updatedList.some((att: StaffAttendant) => att.phone.toLowerCase() === inviteEmail.toLowerCase())) {
+        updatedList.push({
+          id: attendantId,
+          name: inviteName,
+          phone: inviteEmail,
+          role: 'attendant',
+          pin_hash: 'needs_setup',
+          created_at: now,
+        });
+      }
+      await db.meta.put({ key: 'staff_attendants', value: updatedList });
+
+      setTempUserForPin({ user: newAttendantUser, shop });
+      setIsSettingPin(true);
+      setIsAttendantInvite(false); // Done with invite step
+    } catch (err: any) {
+      setAttendantError(err?.message || 'Failed to complete registration. Please try again.');
+    } finally {
+      setIsActivatingAttendant(false);
+    }
+  };
+
   // Listen to network status
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -114,6 +233,185 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
     }
     wipeOldAccountsOnce();
+  }, []);
+
+  // Listen for Attendant Invite URL Hash parameters
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const hash = window.location.hash || '';
+    if (hash.includes('role=attendant')) {
+      const params = new URLSearchParams(hash.replace('#', '?'));
+      const emailParam = params.get('email') || '';
+      const nameParam = params.get('name') || '';
+      if (emailParam) {
+        setIsAttendantInvite(true);
+        setInviteEmail(emailParam);
+        setInviteName(nameParam);
+        
+        // Clean URL hash
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      }
+    }
+  }, []);
+
+  // Listen for Supabase Magic Link and signup redirect hash parameters
+  useEffect(() => {
+    async function handleMagicLinkRedirect() {
+      if (typeof window === 'undefined') return;
+      const hash = window.location.hash || '';
+      if (!hash.includes('access_token=')) return;
+
+      try {
+        const params = new URLSearchParams(hash.replace('#', '?'));
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+        const expiresInStr = params.get('expires_in');
+
+        if (!accessToken) return;
+
+        // Clean hash from URL so it doesn't linger
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+
+        const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+        const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+
+        if (!url || !anonKey) {
+          console.warn('Supabase is not configured. Skipping magic link verification.');
+          return;
+        }
+
+        // Fetch authenticated user details from Supabase using access token
+        const userResp = await fetch(`${url}/auth/v1/user`, {
+          method: 'GET',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+
+        if (!userResp.ok) {
+          throw new Error('Failed to fetch user with redirect token.');
+        }
+
+        const userData = await userResp.json();
+        const emailVerified = userData.email || '';
+
+        // Store the session in localStorage
+        const expiresIn = expiresInStr ? parseInt(expiresInStr, 10) : 3600;
+        const sessionData = {
+          accessToken,
+          refreshToken,
+          expiresAt: Date.now() + (expiresIn * 1000),
+          userId: userData.id,
+          email: emailVerified,
+        };
+        localStorage.setItem('smartsort_session', JSON.stringify(sessionData));
+        localStorage.setItem('smartsort_authenticated', 'true');
+
+        // Check if we have a registration draft saved
+        const draftStr = localStorage.getItem('smartsort_signup_draft');
+        const draft = draftStr ? JSON.parse(draftStr) : null;
+        const now = serverNow();
+
+        if (draft && draft.email.toLowerCase() === emailVerified.toLowerCase()) {
+          // Complete full-fidelity registration automatically using the draft!
+          await clearDatabaseForFreshStart();
+          const paidUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+          const newShopId = crypto.randomUUID();
+
+          const newShop: Shop = {
+            shop_id: newShopId,
+            shop_name: draft.shopName.trim(),
+            owner_name: draft.fullName.trim(),
+            phone: '',
+            till_number: '6997912',
+            role: 'owner',
+            user_id: userData.id,
+            avatar_emoji: '🏪',
+            tagline: 'Leading Kenyan Retail Solutions',
+            contact_email: draft.email.trim().toLowerCase(),
+            county: 'Nairobi',
+            town: 'Westlands',
+            default_credit_limit: toKES(3000),
+            receipt_footer: 'Powered by Smartsort Solutions',
+            business_cutoff_hour: 22,
+            plan_code: 'daily_30',
+            plan_name: 'Daily Access Plan (KES 30/day)',
+            plan_amount_kes: 30,
+            plan_status: 'active',
+            subscription_paid_until: paidUntil,
+            preferred_payment_method: 'mpesa',
+            plan_acknowledged: true,
+            created_at: now,
+          };
+
+          const newUser: ShopUser = {
+            id: userData.id,
+            shop_id: newShopId,
+            name: draft.fullName.trim(),
+            username: draft.username.trim().toLowerCase(),
+            email: draft.email.trim().toLowerCase(),
+            phone: '',
+            role: 'owner',
+            password_hash: draft.password,
+            onboarding_step: 'complete',
+            profile_completed_at: now,
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+          };
+
+          await db.meta.put({ key: 'shop_info', value: newShop });
+          await db.meta.put({ key: 'user_info', value: newUser });
+
+          setTempUserForPin({ user: newUser, shop: newShop });
+          setIsSettingPin(true);
+          localStorage.removeItem('smartsort_signup_draft');
+          
+          if (typeof window !== 'undefined') {
+            window.alert('Magic Link verified successfully! Let\'s secure your account by setting up your 4-digit PIN.');
+          }
+        } else {
+          // Regular Login flow redirect (no signup draft)
+          let shop = await getShopMeta();
+          if (!shop) {
+            const seeded = await initializeDefaultDatabase();
+            shop = seeded.shop;
+          }
+
+          const localUser: ShopUser = {
+            id: userData.id,
+            shop_id: shop.shop_id,
+            name: userData.user_metadata?.full_name || 'Smartsort User',
+            username: userData.user_metadata?.username || emailVerified.split('@')[0],
+            email: emailVerified,
+            phone: '',
+            role: 'owner',
+            pin_hash: userData.user_metadata?.pin_hash || '',
+            onboarding_step: 'complete',
+            profile_completed_at: now,
+            is_active: true,
+            created_at: userData.created_at || now,
+            updated_at: now,
+          };
+
+          await db.meta.put({ key: 'user_info', value: localUser });
+          onAuthenticated(localUser, shop);
+
+          if (typeof window !== 'undefined') {
+            window.alert('Magic Link verified successfully! Welcome back.');
+          }
+        }
+      } catch (err: any) {
+        console.error('Magic Link validation error:', err);
+        setOtpError(`Magic Link Verification Error: ${err.message}`);
+      }
+    }
+    handleMagicLinkRedirect();
   }, []);
 
   // Check if existing user exists in local Dexie
@@ -143,6 +441,17 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   // WebAuthn / Biometrics Passkey Simulation/Authentication
   const handleBiometricLogin = async () => {
     setLoginError('');
+
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('biometrics_enabled') !== 'true') {
+      const errMsg = language === 'en'
+        ? 'Biometric/Passkey sign-in is not enabled on this device. Please log in with your password and enable it in Settings first.'
+        : 'Kuingia kwa alama ya vidole hakujawezeshwa kwenye simu hii. Tafadhali ingia kwa nenosiri kwanza na uwezeshe kwenye Mipangilio.';
+      setLoginError(errMsg);
+      if (typeof window !== 'undefined') {
+        window.alert(errMsg);
+      }
+      return;
+    }
     
     if (typeof window !== 'undefined') {
       const confirmBiometrics = window.confirm(
@@ -326,7 +635,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setPinError('');
 
     try {
-      const isValid = await verifyPin(inputPin, existingUser.pin_hash || '', existingUser.phone);
+      const isValid = await verifyPin(inputPin, existingUser.pin_hash || '', 'smartsort-kenya-duka');
       if (isValid) {
         if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
           window.navigator.vibrate([20, 40, 20]);
@@ -463,6 +772,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     if (!targetEmail) {
       setOtpError(language === 'en' ? 'Please enter your email address first.' : 'Tafadhali weka barua pepe yako kwanza.');
       return;
+    }
+
+    // Save signup draft to localStorage so that they can authenticate via Magic Link too!
+    if (typeof localStorage !== 'undefined') {
+      const signupDraft = {
+        fullName,
+        shopName,
+        username,
+        email,
+        password
+      };
+      localStorage.setItem('smartsort_signup_draft', JSON.stringify(signupDraft));
     }
 
     setOtpError('');
@@ -656,7 +977,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const handleSaveDevicePin = async (enteredPin: string) => {
     if (enteredPin.length < 4 || !tempUserForPin) return;
 
-    const hashed = await hashPin(enteredPin, tempUserForPin.user.phone || 'smartsort');
+    const hashed = await hashPin(enteredPin, 'smartsort-kenya-duka');
     const finalUser = await saveShopUser({
       pin_hash: hashed,
     });
@@ -688,6 +1009,95 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     onAuthenticated(finalUser, tempUserForPin.shop);
   };
+
+  // Render Attendant Invite Registration Prompt
+  if (isAttendantInvite) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-[420px] bg-white rounded-3xl p-6 shadow-xl border border-slate-200 space-y-4">
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-2xl bg-brand-gradient text-white flex items-center justify-center text-2xl mx-auto mb-2 shadow-md">
+              🧑‍💼
+            </div>
+            <h2 className="text-xl font-black text-slate-900 leading-tight">
+              {language === 'en' ? 'Attendant Registration' : 'Usajili wa Mhudumu'}
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              {language === 'en'
+                ? `Welcome, ${inviteName}! Set up your secure account password below.`
+                : `Karibu, ${inviteName}! Weka nenosiri lako la usalama hapa chini.`}
+            </p>
+          </div>
+
+          <form onSubmit={handleAttendantRegister} className="space-y-4">
+            {attendantError && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold text-center animate-shake">
+                {attendantError}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-0.5">
+                {language === 'en' ? 'Email Address' : 'Barua Pepe'}
+              </label>
+              <input
+                type="email"
+                value={inviteEmail}
+                disabled
+                className="w-full h-10 px-3 text-sm font-semibold bg-slate-100 border border-slate-200 rounded-xl text-slate-500 cursor-not-allowed"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-0.5">
+                {language === 'en' ? 'Create Password (min 8 chars)' : 'Nenosiri Jipya (herufi 8+)'} *
+              </label>
+              <input
+                type="password"
+                value={attendantPassword}
+                onChange={(e) => setAttendantPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full h-10 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                required
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-0.5">
+                {language === 'en' ? 'Confirm Password' : 'Thibitisha Nenosiri'} *
+              </label>
+              <input
+                type="password"
+                value={attendantConfirmPassword}
+                onChange={(e) => setAttendantConfirmPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full h-10 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                required
+              />
+            </div>
+
+            <Button
+              type="submit"
+              variant="gradient"
+              size="hero"
+              fullWidth
+              disabled={isActivatingAttendant}
+            >
+              {isActivatingAttendant ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-1.5" />
+                  <span>{language === 'en' ? 'Activating...' : 'Inasajili...'}</span>
+                </>
+              ) : (
+                language === 'en' ? 'Activate Account' : 'Wezesha Akaunti'
+              )}
+            </Button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   // Render Post-Signup Device PIN Setup Prompt
   if (isSettingPin) {
@@ -863,14 +1273,16 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             </Button>
 
             {/* Passkey / Biometric Login Option */}
-            <button
-              type="button"
-              onClick={handleBiometricLogin}
-              className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer"
-            >
-              <Smartphone className="w-3.5 h-3.5 text-slate-600 animate-pulse" />
-              <span>{language === 'en' ? 'Sign in with Passkey / Biometrics' : 'Ingia kwa Alama ya Vidole (Biometrics)'}</span>
-            </button>
+            {typeof localStorage !== 'undefined' && localStorage.getItem('biometrics_enabled') === 'true' && (
+              <button
+                type="button"
+                onClick={handleBiometricLogin}
+                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer"
+              >
+                <Smartphone className="w-3.5 h-3.5 text-slate-600 animate-pulse" />
+                <span>{language === 'en' ? 'Sign in with Passkey / Biometrics' : 'Ingia kwa Alama ya Vidole (Biometrics)'}</span>
+              </button>
+            )}
 
             {/* Switch between PIN, Sign Up */}
             <div className="pt-2 border-t border-slate-100 flex flex-col gap-2 text-center text-xs">
@@ -1259,7 +1671,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           </div>
           <div>
             <a
-              href="https://roastme.site/privacy/sales%20manager"
+              href="https://roastme.site/privacy/"
               target="_blank"
               rel="noopener noreferrer"
               className="text-slate-400 hover:text-slate-500 hover:underline"

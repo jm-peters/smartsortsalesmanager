@@ -74,6 +74,8 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
   const [attendantName, setAttendantName] = useState('');
   const [attendantPhone, setAttendantPhone] = useState('');
   const [attendantPin, setAttendantPin] = useState('');
+  const [attendantEmail, setAttendantEmail] = useState('');
+  const [generatedLink, setGeneratedLink] = useState('');
 
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -195,23 +197,50 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
           profile_completed_at: new Date().toISOString(),
         });
       } else if (stepType === 'staff') {
-        if (!attendantName.trim() || attendantPin.length < 4) {
+        const cleanEmail = attendantEmail.trim().toLowerCase();
+        if (!attendantName.trim() || !cleanEmail || !cleanEmail.includes('@')) {
           setErrorMsg(
             language === 'en'
-              ? 'Please provide attendant name and 4-digit PIN.'
-              : 'Weka jina la mhudumu na tarakimu 4 za PIN.'
+              ? 'Please provide attendant name and a valid email address.'
+              : 'Tafadhali weka jina la mhudumu na barua pepe sahihi.'
           );
           setSaving(false);
           return;
         }
 
-        const hashed = await hashPin(attendantPin, attendantPhone || 'smartsort');
+        const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+        const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+
+        // Pre-register user via Supabase OTP if configured
+        if (url && anonKey) {
+          try {
+            await fetch(`${url}/auth/v1/otp`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                apikey: anonKey,
+              },
+              body: JSON.stringify({
+                email: cleanEmail,
+              }),
+            });
+          } catch (otpErr) {
+            console.warn('Supabase OTP pre-register failed:', otpErr);
+          }
+        }
+
+        // Store attendant locally
         await addStaffAttendant({
           name: attendantName.trim(),
-          phone: attendantPhone.trim(),
+          phone: cleanEmail,
           role: 'attendant',
-          pin_hash: hashed,
+          pin_hash: 'pending', // Marks as pending invite
         });
+
+        // Generate copyable invitation link
+        const link = `${window.location.origin}/#role=attendant&email=${encodeURIComponent(cleanEmail)}&name=${encodeURIComponent(attendantName.trim())}`;
+        setGeneratedLink(link);
+        return; // Wait for user to copy link and dismiss
       }
 
       onSuccess(updatedShop, updatedUser);
@@ -523,46 +552,82 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
 
           {/* STEP: ADD STAFF */}
           {stepType === 'staff' && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {t.attendantName} *
-                </label>
-                <input
-                  type="text"
-                  value={attendantName}
-                  onChange={(e) => setAttendantName(e.target.value)}
-                  placeholder="e.g. Brian Omondi"
-                  className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
-                />
-              </div>
+            <div className="space-y-4">
+              {generatedLink ? (
+                <div className="space-y-3 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-center">
+                  <div className="w-12 h-12 bg-emerald-100 text-emerald-800 rounded-full flex items-center justify-center mx-auto text-xl font-bold">
+                    ✉️
+                  </div>
+                  <h3 className="text-sm font-black text-emerald-900">
+                    {language === 'en' ? 'Invitation Generated!' : 'Mwaliko Umetengenezwa!'}
+                  </h3>
+                  <p className="text-[11px] text-slate-600">
+                    {language === 'en'
+                      ? 'The attendant has been pre-registered in Supabase. Copy the secure link below to send to them:'
+                      : 'Mhudumu amesajiliwa kwenye Supabase. Nakili kiunga hapa chini ili umtumie:'}
+                  </p>
+                  
+                  <div className="flex items-center gap-1.5 p-2 bg-white border border-emerald-300 rounded-xl">
+                    <input
+                      type="text"
+                      readOnly
+                      value={generatedLink}
+                      className="w-full text-[10px] font-mono text-slate-700 bg-transparent outline-none border-none select-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                          navigator.clipboard.writeText(generatedLink);
+                          window.alert(language === 'en' ? 'Link copied to clipboard!' : 'Kiunga kimenakiliwa!');
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-[10px] font-bold active:scale-[0.98]"
+                    >
+                      {language === 'en' ? 'Copy' : 'Nakili'}
+                    </button>
+                  </div>
+                  
+                  <span className="text-[9px] text-slate-400 block pt-1">
+                    {language === 'en'
+                      ? 'They will follow this link to set their password and 4-digit unlock code.'
+                      : 'Watafuata kiunga hiki ili kuweka nenosiri na nambari ya siri ya kufungua.'}
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {t.attendantName} *
+                    </label>
+                    <input
+                      type="text"
+                      value={attendantName}
+                      onChange={(e) => setAttendantName(e.target.value)}
+                      placeholder="e.g. Brian Omondi"
+                      className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {t.attendantPhone}
-                </label>
-                <input
-                  type="tel"
-                  value={attendantPhone}
-                  onChange={(e) => setAttendantPhone(e.target.value)}
-                  placeholder="0722334455"
-                  className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {t.attendantPin} *
-                </label>
-                <input
-                  type="password"
-                  maxLength={4}
-                  value={attendantPin}
-                  onChange={(e) => setAttendantPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="1234"
-                  className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500 tracking-widest text-center"
-                />
-              </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {language === 'en' ? 'Attendant Email Address' : 'Barua Pepe ya Mhudumu'} *
+                    </label>
+                    <input
+                      type="email"
+                      value={attendantEmail}
+                      onChange={(e) => setAttendantEmail(e.target.value)}
+                      placeholder="e.g. brian@gmail.com"
+                      className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                    />
+                    <span className="text-[10px] text-slate-400 block mt-1">
+                      {language === 'en'
+                        ? 'Pre-registers them securely in Supabase Auth to enable remote access.'
+                        : 'Inawasajili salama kwenye Supabase Auth ili kuwawezesha kuingia duka.'}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -570,18 +635,20 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
         {/* Action Buttons */}
         <div className="flex gap-2 pt-2 border-t border-slate-100">
           <Button variant="outline" size="md" onClick={onClose} disabled={saving}>
-            {t.cancel}
+            {generatedLink ? (language === 'en' ? 'Close' : 'Funga') : t.cancel}
           </Button>
-          <Button
-            variant="gradient"
-            size="md"
-            fullWidth
-            onClick={handleSave}
-            disabled={saving}
-            className="font-bold"
-          >
-            {saving ? t.loading : t.save}
-          </Button>
+          {!generatedLink && (
+            <Button
+              variant="gradient"
+              size="md"
+              fullWidth
+              onClick={handleSave}
+              disabled={saving}
+              className="font-bold"
+            >
+              {saving ? t.loading : (language === 'en' ? 'Send Invite Link' : 'Tuma Mwaliko')}
+            </Button>
+          )}
         </div>
       </div>
     </div>
