@@ -31,6 +31,7 @@ export interface Product {
   deleted_at: string | null;
   change_seq?: number;
   device_id: string;
+  fractional_prices?: { qty: number; price: KES }[];
 }
 
 export type StockReason =
