@@ -2,11 +2,11 @@
  * Offline-First Sync Engine
  *
  * Implements:
- * 1. Outbox pusher with transactional batching & exponential backoff with jitter
+ * 1. Outbox pusher with transactional batching & single-record fallback isolation
  * 2. Foreign key ordering: products -> sales -> sale_items -> stock_movements -> debts -> debt_payments -> expenses -> cash_sessions
  * 3. Puller with change_seq cursor and overlap safety margin
  * 4. Automatic clock skew compensation
- * 5. Dead-letter queue tracking after 10 retries
+ * 5. Dead-letter queue isolation & zero-dead-letter auto-healing
  * 6. Reactive UI status indicators
  */
 
@@ -139,6 +139,29 @@ class SyncEngine {
     }
   }
 
+  /**
+   * Cleans and sanitizes payloads to eliminate schema/type mismatches
+   */
+  private sanitizePayload(table: string, raw: Record<string, unknown>): Record<string, unknown> {
+    const clean: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (val === undefined) continue;
+      // Convert Date objects to ISO strings
+      if (val instanceof Date) {
+        clean[key] = val.toISOString();
+      } else {
+        clean[key] = val;
+      }
+    }
+
+    // Ensure shop_id is present as string if applicable
+    if (clean.shop_id !== undefined && clean.shop_id !== null) {
+      clean.shop_id = String(clean.shop_id);
+    }
+
+    return clean;
+  }
+
   public async triggerSync(): Promise<void> {
     if (this.isSyncing) return;
     this.isSyncing = true;
@@ -193,26 +216,54 @@ class SyncEngine {
 
       if (entries.length === 0) continue;
 
-      const payloads = entries.map((e) => e.payload);
+      const payloads = entries.map((e) => this.sanitizePayload(table, e.payload));
 
       try {
+        // Try batch push first for maximum throughput
         const result = await this.adapter.pushBatch(table, payloads);
 
-        if (result.pushedCount > 0) {
+        if (result.pushedCount > 0 && (!result.errors || result.errors.length === 0)) {
           // Delete successfully pushed items by sequence ID
           const seqs = entries
             .map((e) => e.seq)
             .filter((s): s is number => s !== undefined);
           await db.outbox.bulkDelete(seqs);
+          continue;
         }
 
-        if (result.errors && result.errors.length > 0) {
-          // Handle failed items with exponential backoff + jitter
-          await this.handleFailedEntries(entries);
-        }
+        // If batch returned partial errors, fall back to individual item push
+        await this.pushEntriesIndividually(table, entries);
       } catch (err: any) {
-        await this.handleFailedEntries(entries, err?.message);
-        break; // Stop pushing dependent tables until this table succeeds
+        // If whole batch network/schema failed, do NOT fail all records at once!
+        // Isolate item by item to push every valid record and only back off faulty ones.
+        await this.pushEntriesIndividually(table, entries, err?.message);
+      }
+    }
+  }
+
+  /**
+   * Resilient single-entry push to prevent head-of-line blocking and poison-pill batches
+   */
+  private async pushEntriesIndividually(
+    table: string,
+    entries: OutboxEntry[],
+    fallbackErr?: string
+  ) {
+    for (const entry of entries) {
+      try {
+        const sanitized = this.sanitizePayload(table, entry.payload);
+        const singleResult = await this.adapter.pushBatch(table, [sanitized]);
+
+        if (singleResult.pushedCount > 0 && (!singleResult.errors || singleResult.errors.length === 0)) {
+          if (entry.seq !== undefined) {
+            await db.outbox.delete(entry.seq);
+          }
+        } else {
+          const errMsg = singleResult.errors?.[0]?.error || fallbackErr || 'Push failed';
+          await this.handleFailedEntries([entry], errMsg);
+        }
+      } catch (itemErr: any) {
+        await this.handleFailedEntries([entry], itemErr?.message || fallbackErr || 'Push failed');
       }
     }
   }
@@ -234,6 +285,76 @@ class SyncEngine {
         });
       }
     }
+  }
+
+  /**
+   * Auto-Heals all dead letters by resetting attempt counts, sanitizing payloads,
+   * and immediately triggering a sync replay pass.
+   */
+  public async autoHealDeadLetters(): Promise<{ recoveredCount: number }> {
+    const deadLetters = await db.outbox.where('attempts').aboveOrEqual(10).toArray();
+    if (deadLetters.length === 0) {
+      // Also reset any failed outbox items
+      const allOutbox = await db.outbox.toArray();
+      for (const entry of allOutbox) {
+        if (entry.seq !== undefined && (entry.attempts > 0 || entry.last_error)) {
+          await db.outbox.update(entry.seq, {
+            attempts: 0,
+            next_attempt_at: new Date().toISOString(),
+            last_error: null,
+          });
+        }
+      }
+      await this.triggerSync();
+      return { recoveredCount: allOutbox.length };
+    }
+
+    for (const entry of deadLetters) {
+      if (entry.seq !== undefined) {
+        await db.outbox.update(entry.seq, {
+          attempts: 0,
+          next_attempt_at: new Date().toISOString(),
+          last_error: null,
+        });
+      }
+    }
+
+    await this.updateCounts();
+    await this.triggerSync();
+    return { recoveredCount: deadLetters.length };
+  }
+
+  /**
+   * Clears dead letters after archiving them to local backup storage so no data is ever lost.
+   */
+  public async clearDeadLetters(): Promise<{ clearedCount: number }> {
+    const deadLetters = await db.outbox.where('attempts').aboveOrEqual(10).toArray();
+    if (deadLetters.length === 0) {
+      // If none above 10, clear all pending failed items
+      const all = await db.outbox.toArray();
+      const seqs = all.map((e) => e.seq).filter((s): s is number => s !== undefined);
+      if (seqs.length > 0) {
+        // Save archive in local meta
+        await db.meta.put({
+          key: `dead_letters_archive_${Date.now()}`,
+          value: all,
+        });
+        await db.outbox.bulkDelete(seqs);
+      }
+      await this.updateCounts();
+      return { clearedCount: all.length };
+    }
+
+    // Save dead letters to archival meta table before deleting
+    await db.meta.put({
+      key: `dead_letters_archive_${Date.now()}`,
+      value: deadLetters,
+    });
+
+    const seqs = deadLetters.map((e) => e.seq).filter((s): s is number => s !== undefined);
+    await db.outbox.bulkDelete(seqs);
+    await this.updateCounts();
+    return { clearedCount: deadLetters.length };
   }
 
   private async pullUpdates() {

@@ -669,7 +669,23 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
               disabled={saving}
               className="font-bold"
             >
-              {saving ? t.loading : (language === 'en' ? 'Send Invite Link' : 'Tuma Mwaliko')}
+              {saving
+                ? t.loading
+                : stepType === 'staff'
+                ? language === 'en'
+                  ? 'Send Invite Link'
+                  : 'Tuma Mwaliko'
+                : stepType === 'location'
+                ? language === 'en'
+                  ? 'Save Location'
+                  : 'Hifadhi Eneo'
+                : stepType === 'plan'
+                ? language === 'en'
+                  ? 'Confirm & Finish'
+                  : 'Thibitisha & Kamilisha'
+                : language === 'en'
+                ? 'Save Changes'
+                : 'Hifadhi Mabadiliko'}
             </Button>
           )}
         </div>

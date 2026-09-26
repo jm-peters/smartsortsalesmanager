@@ -66,6 +66,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   // Sync state
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(syncEngine.getStatus());
   const [isSyncingManual, setIsSyncingManual] = useState(false);
+  const [isAutoHealing, setIsAutoHealing] = useState(false);
+  const [isClearingDead, setIsClearingDead] = useState(false);
+  const [healNotice, setHealNotice] = useState<string | null>(null);
 
   // Storage estimation
   const [storageEstimate, setStorageEstimate] = useState<{ usedMB: string; quotaMB: string } | null>(null);
@@ -749,11 +752,87 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </div>
             <div className="py-2 flex justify-between">
               <span className="text-slate-500">{isEn ? 'Dead letters (failed):' : 'Miamala iliyokwama (Dead letters):'}</span>
-              <span className="font-bold text-slate-700 tabular-nums">
+              <span className={`font-bold tabular-nums ${syncStatus.deadLetterCount > 0 ? 'text-rose-600' : 'text-slate-700'}`}>
                 {syncStatus.deadLetterCount}
               </span>
             </div>
           </div>
+
+          {healNotice && (
+            <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-[11px] font-bold text-center">
+              {healNotice}
+            </div>
+          )}
+
+          {syncStatus.deadLetterCount > 0 && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+              <div className="text-[11px] text-amber-900 font-semibold leading-tight">
+                {isEn
+                  ? 'There are failed sync items held in the dead-letter queue. You can auto-repair & retry them, or safely archive and clear them.'
+                  : 'Kuna miamala iliyoshindwa kurushwa mtandaoni. Unaweza kuikarabati upya au kuifuta kwa usalama.'}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={isAutoHealing}
+                  onClick={async () => {
+                    setIsAutoHealing(true);
+                    setHealNotice(null);
+                    try {
+                      const res = await syncEngine.autoHealDeadLetters();
+                      setHealNotice(
+                        isEn
+                          ? `Auto-healed & replaying ${res.recoveredCount} items...`
+                          : `Miamala ${res.recoveredCount} imerekebishwa na inarudiwa...`
+                      );
+                    } catch (e: any) {
+                      setHealNotice(isEn ? 'Failed to auto-heal' : 'Imeshindwa kukarabati');
+                    } finally {
+                      setIsAutoHealing(false);
+                    }
+                  }}
+                  className="px-2.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isAutoHealing ? 'animate-spin' : ''}`} />
+                  <span>{isEn ? 'Auto-Heal & Retry' : 'Karabati & Rudia'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isClearingDead}
+                  onClick={async () => {
+                    if (
+                      !window.confirm(
+                        isEn
+                          ? 'This will archive and clear all dead letter items from the queue. Continue?'
+                          : 'Hii itahifadhi nakala na kuondoa miamala yote iliyokwama kwenye foleni. Je, unaendelea?'
+                      )
+                    ) {
+                      return;
+                    }
+                    setIsClearingDead(true);
+                    setHealNotice(null);
+                    try {
+                      const res = await syncEngine.clearDeadLetters();
+                      setHealNotice(
+                        isEn
+                          ? `Archived & cleared ${res.clearedCount} dead letters.`
+                          : `Miamala ${res.clearedCount} imehifadhiwa na kuondolewa.`
+                      );
+                    } catch (e: any) {
+                      setHealNotice(isEn ? 'Could not clear queue' : 'Imeshindwa kuondoa');
+                    } finally {
+                      setIsClearingDead(false);
+                    }
+                  }}
+                  className="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3 h-3 text-rose-500" />
+                  <span>{isEn ? 'Clear / Archive' : 'Ondoa / Hifadhi'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <Button
             variant="outline"
