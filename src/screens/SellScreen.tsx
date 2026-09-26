@@ -19,6 +19,7 @@ import {
   Coins,
   Calculator,
   RotateCcw,
+  Scale,
 } from 'lucide-react';
 import {
   db,
@@ -59,6 +60,15 @@ interface CartItem {
   qty: number;
   unitPrice: KES;
   overridePrice?: KES | null;
+  lineTotalOverride?: KES | null;
+  portionLabel?: string;
+}
+
+function getFractionDisplay(qty: number, unitStr: string = 'unit'): string {
+  if (qty === 0.25) return '¼ (Quarter)';
+  if (qty === 0.5) return '½ (Half)';
+  if (qty === 0.75) return '¾ (3/4)';
+  return `${qty} ${unitStr}`;
 }
 
 interface SellScreenProps {
@@ -88,6 +98,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   onNavigateToDeni,
 }) => {
   const t = translations[language];
+  const isEn = language === 'en';
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isPaymentSheetOpen, setIsPaymentSheetOpen] = useState(false);
@@ -96,6 +107,11 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   const [newCustomerName, setNewCustomerName] = useState<string>('');
   const [newCustomerPhone, setNewCustomerPhone] = useState<string>('');
   const [cashTenderedInput, setCashTenderedInput] = useState<string>('');
+
+  // Fractional / Sub-Unit Selection Modal
+  const [fractionalModalProduct, setFractionalModalProduct] = useState<Product | null>(null);
+  const [customFractionQtyStr, setCustomFractionQtyStr] = useState<string>('0.5');
+  const [customFractionPriceStr, setCustomFractionPriceStr] = useState<string>('');
 
   // Sale Success Toast & Persistent Recent Receipt
   const [lastSale, setLastSale] = useState<CompletedSaleState | null>(null);
@@ -182,19 +198,22 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   // Cart total calculation
   const cartTotal = useMemo(() => {
     return cart.reduce((sum, item) => {
+      if (item.lineTotalOverride != null) {
+        return addKES(sum, item.lineTotalOverride);
+      }
       const price = item.overridePrice ?? item.unitPrice;
       return addKES(sum, mulKES(price, item.qty));
     }, toKES(0));
   }, [cart]);
 
   const cartItemCount = useMemo(() => {
-    return cart.reduce((count, item) => count + item.qty, 0);
+    return cart.reduce((count, item) => count + (item.qty >= 1 ? item.qty : 1), 0);
   }, [cart]);
 
   const cartCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const item of cart) {
-      map.set(item.product.id, item.qty);
+      map.set(item.product.id, (map.get(item.product.id) || 0) + item.qty);
     }
     return map;
   }, [cart]);
@@ -276,14 +295,16 @@ export const SellScreen: React.FC<SellScreenProps> = ({
     return () => clearInterval(timer);
   }, [successToastSecondsLeft]);
 
-  // Add 1 to cart or increment
+  // Add 1 whole product to cart or increment
   const addToCart = (product: Product) => {
     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(10);
     }
 
     setCart((prev) => {
-      const existingIndex = prev.findIndex((item) => item.product.id === product.id);
+      const existingIndex = prev.findIndex(
+        (item) => item.product.id === product.id && !item.portionLabel
+      );
       if (existingIndex >= 0) {
         const next = [...prev];
         next[existingIndex] = {
@@ -303,16 +324,83 @@ export const SellScreen: React.FC<SellScreenProps> = ({
     });
   };
 
-  const updateCartQty = (productId: string, delta: number) => {
+  // Add fractional / sub-unit portion to cart
+  const addFractionalToCart = (
+    product: Product,
+    qty: number,
+    price: KES,
+    portionLabel?: string
+  ) => {
+    if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+      window.navigator.vibrate(12);
+    }
+
+    const label = portionLabel || getFractionDisplay(qty, product.unit);
+
+    setCart((prev) => {
+      const existingIndex = prev.findIndex(
+        (item) => item.product.id === product.id && item.portionLabel === label
+      );
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        const existing = next[existingIndex];
+        const newQty = Number((existing.qty + qty).toFixed(2));
+        const newLineTotal = existing.lineTotalOverride != null
+          ? addKES(existing.lineTotalOverride, price)
+          : mulKES(price, newQty);
+
+        next[existingIndex] = {
+          ...existing,
+          qty: newQty,
+          lineTotalOverride: newLineTotal,
+        };
+        return next;
+      }
+
+      return [
+        ...prev,
+        {
+          product,
+          qty,
+          unitPrice: price,
+          lineTotalOverride: price,
+          portionLabel: label,
+        },
+      ];
+    });
+
+    setFractionalModalProduct(null);
+  };
+
+  const handleProductCardClick = (product: Product) => {
+    if (product.fractional_prices && product.fractional_prices.length > 0) {
+      setFractionalModalProduct(product);
+      setCustomFractionQtyStr('0.5');
+      setCustomFractionPriceStr(String(Math.round(product.selling_price * 0.5)));
+    } else {
+      addToCart(product);
+    }
+  };
+
+  const updateCartQty = (productId: string, delta: number, portionLabel?: string) => {
     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(10);
     }
     setCart((prev) => {
       const updated = prev
         .map((item) => {
-          if (item.product.id === productId) {
-            const nextQty = item.qty + delta;
-            return nextQty > 0 ? { ...item, qty: nextQty } : null;
+          if (
+            item.product.id === productId &&
+            (portionLabel === undefined || item.portionLabel === portionLabel)
+          ) {
+            const nextQty = Number((item.qty + delta).toFixed(2));
+            if (nextQty <= 0) return null;
+
+            const newLineTotal = item.lineTotalOverride != null
+              ? toKES(Math.round((item.lineTotalOverride / item.qty) * nextQty))
+              : null;
+
+            return { ...item, qty: nextQty, lineTotalOverride: newLineTotal };
           }
           return item;
         })
@@ -325,13 +413,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({
     });
   };
 
-  // Deselect / Remove entire product from cart (Cancel All)
-  const removeFromCart = (productId: string) => {
+  // Deselect / Remove specific product or portion from cart
+  const removeFromCart = (productId: string, portionLabel?: string) => {
     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(12);
     }
     setCart((prev) => {
-      const updated = prev.filter((item) => item.product.id !== productId);
+      const updated = prev.filter(
+        (item) =>
+          !(
+            item.product.id === productId &&
+            (portionLabel === undefined || item.portionLabel === portionLabel)
+          )
+      );
       if (updated.length === 0) {
         setIsPaymentSheetOpen(false);
       }
@@ -711,28 +805,32 @@ export const SellScreen: React.FC<SellScreenProps> = ({
               const currentStock = stockMap.get(product.id) ?? 0;
               const isOutOfStock = currentStock <= 0;
               const isLowStock = currentStock <= product.low_limit && !isOutOfStock;
-              const cartItem = cart.find((c) => c.product.id === product.id);
+              const cartItem = cart.find((c) => c.product.id === product.id && !c.portionLabel);
+              const fractionalCartItems = cart.filter((c) => c.product.id === product.id && Boolean(c.portionLabel));
+              const hasFractional = Boolean(product.fractional_prices && product.fractional_prices.length > 0);
 
               return (
                 <div
                   key={product.id}
-                  onClick={() => addToCart(product)}
+                  onClick={() => handleProductCardClick(product)}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     if (cartItem) {
                       setEditingItem(cartItem);
                       setOverridePriceStr(String(cartItem.overridePrice ?? cartItem.unitPrice));
+                    } else if (hasFractional) {
+                      setFractionalModalProduct(product);
                     }
                   }}
                   className={`bg-white rounded-2xl p-3 border border-slate-200 shadow-xs flex flex-col justify-between active:scale-[0.98] transition-all relative overflow-hidden cursor-pointer ${
                     isOutOfStock ? 'opacity-70 bg-slate-50/80' : ''
-                  } ${cartItem ? 'ring-2 ring-emerald-500 border-emerald-500' : ''}`}
+                  } ${cartItem || fractionalCartItems.length > 0 ? 'ring-2 ring-emerald-500 border-emerald-500' : ''}`}
                 >
                   {/* Stock Alert Badge & Quick Deselect (Cancel All) */}
                   <div className="flex items-center justify-between gap-1 mb-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-2xl">{product.image_emoji || '📦'}</span>
-                      {cartItem && (
+                      {(cartItem || fractionalCartItems.length > 0) && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -763,9 +861,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                     </span>
                   </div>
 
-                  {/* Name */}
-                  <div className="font-bold text-sm text-slate-800 line-clamp-2 leading-tight mb-2">
-                    {product.name}
+                  {/* Name & Sub-Unit Pill Indicator */}
+                  <div>
+                    <div className="font-bold text-sm text-slate-800 line-clamp-2 leading-tight mb-1">
+                      {product.name}
+                    </div>
+                    {hasFractional && (
+                      <div className="mb-2">
+                        <span className="inline-flex items-center gap-1 text-[9px] font-black bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded-full border border-emerald-300">
+                          <span className="font-extrabold text-emerald-700">½</span>
+                          {isEn ? '¼, ½, ¾ Sub-units' : 'Robo & Nusu'}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Price & Interactive Stepper / Deselect Controls */}
@@ -810,6 +918,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                           <Plus className="w-3 h-3 stroke-[3]" />
                         </button>
                       </div>
+                    ) : hasFractional ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFractionalModalProduct(product);
+                        }}
+                        className="px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1 text-[11px] font-black shadow-2xs active:scale-95 transition"
+                      >
+                        <span>½</span>
+                        <span>{isEn ? 'Portions' : 'Kipimo'}</span>
+                      </button>
                     ) : (
                       <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-400 group-hover:bg-emerald-100 group-hover:text-emerald-700 flex items-center justify-center text-xs font-bold transition">
                         +
@@ -979,53 +1099,81 @@ export const SellScreen: React.FC<SellScreenProps> = ({
               </button>
             </div>
 
-            {cart.map((item) => (
-              <div key={item.product.id} className="py-2 px-1 flex items-center justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <div className="font-bold text-slate-900 truncate">
-                    {item.product.name}
-                  </div>
-                  <div className="text-[11px] text-slate-500 tabular-nums">
-                    {formatKES(item.overridePrice ?? item.unitPrice)} · {formatKES(mulKES(item.overridePrice ?? item.unitPrice, item.qty))}
-                  </div>
-                </div>
+            {cart.map((item, idx) => {
+              const itemTotal = item.lineTotalOverride != null
+                ? item.lineTotalOverride
+                : mulKES(item.overridePrice ?? item.unitPrice, item.qty);
 
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {/* Stepper to cancel one or add more */}
-                  <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 shadow-2xs">
-                    <button
-                      type="button"
-                      onClick={() => updateCartQty(item.product.id, -1)}
-                      className="w-6 h-6 rounded flex items-center justify-center text-slate-600 hover:text-rose-600 hover:bg-rose-50 font-bold active:scale-90 transition"
-                      title={language === 'en' ? 'Cancel one (-1)' : 'Punguza moja (-1)'}
-                    >
-                      <Minus className="w-3 h-3 stroke-[2.5]" />
-                    </button>
-                    <span className="w-6 text-center font-black text-xs tabular-nums text-slate-900">
-                      {item.qty}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => updateCartQty(item.product.id, 1)}
-                      className="w-6 h-6 rounded flex items-center justify-center text-emerald-700 hover:bg-emerald-50 font-bold active:scale-90 transition"
-                      title={language === 'en' ? 'Add one (+1)' : 'Ongeza moja (+1)'}
-                    >
-                      <Plus className="w-3 h-3 stroke-[2.5]" />
-                    </button>
+              return (
+                <div
+                  key={`${item.product.id}-${item.portionLabel || 'full'}-${idx}`}
+                  className="py-2 px-1 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-bold text-slate-900 truncate flex items-center gap-1.5">
+                      <span>{item.product.name}</span>
+                      {item.portionLabel && (
+                        <span className="text-[10px] font-black bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-md border border-emerald-300">
+                          {item.portionLabel}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 tabular-nums">
+                      {item.portionLabel
+                        ? `${item.portionLabel} · Total: ${formatKES(itemTotal)}`
+                        : `${formatKES(item.overridePrice ?? item.unitPrice)}/ea · Total: ${formatKES(itemTotal)}`}
+                    </div>
                   </div>
 
-                  {/* Cancel all button for this item */}
-                  <button
-                    type="button"
-                    onClick={() => removeFromCart(item.product.id)}
-                    className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
-                    title={language === 'en' ? 'Cancel all of this item' : 'Ondoa bidhaa hii kabisa'}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Stepper to cancel one or add more */}
+                    <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 shadow-2xs">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateCartQty(
+                            item.product.id,
+                            item.portionLabel ? -item.qty : -1,
+                            item.portionLabel
+                          )
+                        }
+                        className="w-6 h-6 rounded flex items-center justify-center text-slate-600 hover:text-rose-600 hover:bg-rose-50 font-bold active:scale-90 transition"
+                        title={language === 'en' ? 'Cancel / Reduce' : 'Punguza'}
+                      >
+                        <Minus className="w-3 h-3 stroke-[2.5]" />
+                      </button>
+                      <span className="min-w-6 px-1 text-center font-black text-xs tabular-nums text-slate-900">
+                        {item.portionLabel ? 1 : item.qty}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateCartQty(
+                            item.product.id,
+                            item.portionLabel ? item.qty : 1,
+                            item.portionLabel
+                          )
+                        }
+                        className="w-6 h-6 rounded flex items-center justify-center text-emerald-700 hover:bg-emerald-50 font-bold active:scale-90 transition"
+                        title={language === 'en' ? 'Add (+1)' : 'Ongeza'}
+                      >
+                        <Plus className="w-3 h-3 stroke-[2.5]" />
+                      </button>
+                    </div>
+
+                    {/* Cancel all button for this item */}
+                    <button
+                      type="button"
+                      onClick={() => removeFromCart(item.product.id, item.portionLabel)}
+                      className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
+                      title={language === 'en' ? 'Cancel all of this item' : 'Ondoa bidhaa hii kabisa'}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Payment Method Selector */}
@@ -1455,6 +1603,153 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           changeAmount={(viewingReceiptData || lastSale || recentReceipt)!.changeAmount}
           language={language}
         />
+      )}
+
+      {/* Fractional / Sub-Unit Portion Selection Sheet */}
+      {fractionalModalProduct && (
+        <Sheet
+          isOpen={true}
+          onClose={() => setFractionalModalProduct(null)}
+          title={isEn ? 'Select Portion & Price' : 'Chagua Kipimo na Bei'}
+          subtitle={`${fractionalModalProduct.image_emoji || '📦'} ${fractionalModalProduct.name} · ${isEn ? 'Full' : 'Nzima'}: ${formatKES(fractionalModalProduct.selling_price)} / ${fractionalModalProduct.unit}`}
+        >
+          <div className="space-y-4 select-none">
+            {/* Quick 1-Tap Preset Portions */}
+            <div className="space-y-2">
+              <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                {isEn ? 'Quick Portion Presets:' : 'Vipimo vya Haraka:'}
+              </label>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                {fractionalModalProduct.fractional_prices?.map((fp, idx) => {
+                  const label = getFractionDisplay(fp.qty, fractionalModalProduct.unit);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() =>
+                        addFractionalToCart(
+                          fractionalModalProduct,
+                          fp.qty,
+                          fp.price,
+                          label
+                        )
+                      }
+                      className="p-3.5 bg-emerald-50/80 hover:bg-emerald-100/80 active:scale-95 border-2 border-emerald-300 rounded-2xl flex flex-col items-start justify-between gap-2 text-left transition shadow-2xs cursor-pointer"
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-md bg-emerald-600 text-white flex items-center justify-center text-[10px] font-black">
+                            {fp.qty === 0.25 ? '¼' : fp.qty === 0.5 ? '½' : fp.qty === 0.75 ? '¾' : '½'}
+                          </span>
+                          <span>{label}</span>
+                        </span>
+                      </div>
+                      <div className="text-base font-black text-emerald-800 tabular-nums">
+                        {formatKES(fp.price)}
+                      </div>
+                    </button>
+                  );
+                })}
+
+                {/* 1 Whole Unit option */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    addToCart(fractionalModalProduct);
+                    setFractionalModalProduct(null);
+                  }}
+                  className="p-3.5 bg-slate-50 hover:bg-slate-100 active:scale-95 border-2 border-slate-300 rounded-2xl flex flex-col items-start justify-between gap-2 text-left transition shadow-2xs cursor-pointer"
+                >
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-xs font-black text-slate-900 flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-md bg-slate-700 text-white flex items-center justify-center text-[10px] font-black">
+                        1
+                      </span>
+                      <span>1.0 {fractionalModalProduct.unit} ({isEn ? 'Full Unit' : 'Nzima'})</span>
+                    </span>
+                  </div>
+                  <div className="text-base font-black text-slate-900 tabular-nums">
+                    {formatKES(fractionalModalProduct.selling_price)}
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Custom Decimal Portion & Price Section */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                  <Scale className="w-4 h-4 text-emerald-600" />
+                  <span>{isEn ? 'Or Enter Custom Quantity & Price:' : 'Au Weka Kipimo na Bei Yoyote:'}</span>
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                    {isEn ? `Quantity (${fractionalModalProduct.unit}):` : `Idadi (${fractionalModalProduct.unit}):`}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0.01"
+                    value={customFractionQtyStr}
+                    onChange={(e) => {
+                      const qStr = e.target.value;
+                      setCustomFractionQtyStr(qStr);
+                      const qNum = Number(qStr);
+                      if (qNum > 0) {
+                        setCustomFractionPriceStr(
+                          String(Math.round(fractionalModalProduct.selling_price * qNum))
+                        );
+                      }
+                    }}
+                    placeholder="0.5"
+                    className="w-full h-11 px-3 text-sm font-black bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                    {isEn ? 'Total Price (KES):' : 'Bei ya Kuuza (KES):'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={customFractionPriceStr}
+                    onChange={(e) => setCustomFractionPriceStr(e.target.value)}
+                    placeholder="KES"
+                    className="w-full h-11 px-3 text-sm font-black text-emerald-800 bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <Button
+                variant="gradient"
+                size="md"
+                fullWidth
+                disabled={
+                  !customFractionQtyStr ||
+                  Number(customFractionQtyStr) <= 0 ||
+                  !customFractionPriceStr ||
+                  Number(customFractionPriceStr) <= 0
+                }
+                onClick={() => {
+                  const q = Number(customFractionQtyStr);
+                  const p = toKES(Number(customFractionPriceStr));
+                  const label = `${q} ${fractionalModalProduct.unit}`;
+                  addFractionalToCart(fractionalModalProduct, q, p, label);
+                }}
+              >
+                <Check className="w-4 h-4 mr-1.5" />
+                {isEn
+                  ? `Add ${customFractionQtyStr || 0} ${fractionalModalProduct.unit} for KES ${customFractionPriceStr || 0}`
+                  : `Weka ${customFractionQtyStr || 0} ${fractionalModalProduct.unit} kwa KES ${customFractionPriceStr || 0}`}
+              </Button>
+            </div>
+          </div>
+        </Sheet>
       )}
     </div>
   );

@@ -431,7 +431,7 @@ export async function getShopMeta(): Promise<ShopMeta> {
     shop_id: 'shop-demo-kenya-001',
     shop_name: 'Smartsort Shop',
     owner_name: 'Smartsort User',
-    phone: '0757706978',
+    phone: '',
     till_number: '542190',
     role: 'owner',
     user_id: 'user-owner-001',
@@ -554,33 +554,56 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
 
   // Queue to outbox for remote sync to Supabase shops table
   try {
+    const payload = {
+      id: updated.shop_id,
+      shop_name: updated.shop_name,
+      owner_name: updated.owner_name,
+      phone: updated.phone,
+      till_number: updated.till_number,
+      avatar_emoji: updated.avatar_emoji,
+      tagline: updated.tagline,
+      contact_email: updated.contact_email,
+      alt_phone: updated.alt_phone,
+      county: updated.county,
+      sub_county: updated.sub_county,
+      town: updated.town,
+      landmark: updated.landmark,
+      latitude: updated.latitude,
+      longitude: updated.longitude,
+      receipt_footer: updated.receipt_footer,
+      default_credit_limit: updated.default_credit_limit,
+      plan_code: updated.plan_code,
+      plan_name: updated.plan_name,
+      plan_status: updated.plan_status,
+      subscription_paid_until: updated.subscription_paid_until,
+      preferred_payment_method: updated.preferred_payment_method,
+      updated_at: now,
+    };
+
     await db.outbox.add({
       id: updated.shop_id,
       table: 'shops',
       op: 'update',
-      payload: {
-        id: updated.shop_id,
-        shop_name: updated.shop_name,
-        owner_name: updated.owner_name,
-        phone: updated.phone,
-        till_number: updated.till_number,
-        avatar_emoji: updated.avatar_emoji,
-        tagline: updated.tagline,
-        contact_email: updated.contact_email,
-        alt_phone: updated.alt_phone,
-        county: updated.county,
-        sub_county: updated.sub_county,
-        town: updated.town,
-        landmark: updated.landmark,
-        latitude: updated.latitude,
-        longitude: updated.longitude,
-        receipt_footer: updated.receipt_footer,
-        default_credit_limit: updated.default_credit_limit,
-        updated_at: now,
-      } as Record<string, unknown>,
+      payload: payload as unknown as Record<string, unknown>,
       attempts: 0,
       next_attempt_at: now,
     });
+
+    // Directly push to Supabase REST if online
+    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+    if (url && anonKey) {
+      fetch(`${url}/rest/v1/shops`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          Prefer: 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify([payload]),
+      }).catch((err) => console.warn('Direct Supabase shop sync failed (will retry via outbox):', err));
+    }
   } catch (e) {
     console.warn('Could not queue shop update to outbox:', e);
   }
@@ -640,11 +663,51 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
   const now = serverNow();
 
   const demoCatalog = [
-    { name: 'Sukari 1kg (Sugar)', buy: 150, sell: 175, emoji: '🧂', unit: 'kg', low: 5, pack: 20 },
+    {
+      name: 'Sukari 1kg (Sugar)',
+      buy: 150,
+      sell: 175,
+      emoji: '🧂',
+      unit: 'kg',
+      low: 5,
+      pack: 20,
+      fractional: [
+        { qty: 0.25, price: toKES(45) },
+        { qty: 0.5, price: toKES(90) },
+        { qty: 0.75, price: toKES(135) },
+      ],
+    },
+    {
+      name: 'Mchele Pishori 1kg (Rice)',
+      buy: 180,
+      sell: 220,
+      emoji: '🍚',
+      unit: 'kg',
+      low: 5,
+      pack: 20,
+      fractional: [
+        { qty: 0.25, price: toKES(60) },
+        { qty: 0.5, price: toKES(115) },
+        { qty: 0.75, price: toKES(170) },
+      ],
+    },
+    {
+      name: 'Mafuta Rina 1L (Cooking Oil)',
+      buy: 230,
+      sell: 270,
+      emoji: '🫒',
+      unit: 'ltr',
+      low: 4,
+      pack: 12,
+      fractional: [
+        { qty: 0.25, price: toKES(70) },
+        { qty: 0.5, price: toKES(140) },
+        { qty: 0.75, price: toKES(205) },
+      ],
+    },
     { name: 'Unga Jogoo 2kg (Maize meal)', buy: 140, sell: 165, emoji: '🌽', unit: 'pcs', low: 10, pack: 12 },
     { name: 'Maziwa KCC 500ml (Fresh Milk)', buy: 55, sell: 65, emoji: '🥛', unit: 'pcs', low: 8, pack: 18 },
     { name: 'Mkate Festo 400g (Bread)', buy: 55, sell: 65, emoji: '🍞', unit: 'pcs', low: 6, pack: 20 },
-    { name: 'Mafuta Rina 1L (Cooking Oil)', buy: 230, sell: 270, emoji: '🫒', unit: 'ltr', low: 4, pack: 12 },
     { name: 'Majani Ketepa Chai 50g', buy: 45, sell: 55, emoji: '☕', unit: 'pcs', low: 8, pack: 24 },
     { name: 'Omo / Sunlight 200g', buy: 50, sell: 60, emoji: '🧼', unit: 'pcs', low: 5, pack: 24 },
     { name: 'Mayai (Egg single)', buy: 13, sell: 18, emoji: '🥚', unit: 'pcs', low: 15, pack: 30 },
@@ -658,7 +721,7 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
 
   await db.transaction('rw', [db.products, db.stock_movements, db.product_stock, db.outbox], async () => {
     for (let i = 0; i < demoCatalog.length; i++) {
-      const item = demoCatalog[i];
+      const item = demoCatalog[i] as any;
       const prodId = `prod-kenya-${i + 1}`;
       const product: Product = {
         id: prodId,
@@ -675,6 +738,7 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
         is_pinned: i < 3, // Pin top 3 by default
         pin_order: i < 3 ? i + 1 : null,
         pack_size: item.pack,
+        fractional_prices: item.fractional || undefined,
         created_at: now,
         updated_at: now,
         deleted_at: null,
@@ -926,6 +990,8 @@ export async function recordSale(saleData: {
     qty: number;
     unitPrice: KES;
     overridePrice?: KES | null;
+    lineTotalOverride?: KES | null;
+    portionLabel?: string;
   }>;
   customer?: {
     id?: string;
@@ -953,14 +1019,22 @@ export async function recordSale(saleData: {
 
   for (const line of saleData.items) {
     const finalUnitPrice = line.overridePrice ?? line.unitPrice;
-    const lineTotal = mulKES(finalUnitPrice, line.qty);
+    const lineTotal = line.lineTotalOverride != null ? line.lineTotalOverride : mulKES(finalUnitPrice, line.qty);
     const unitCost = line.product.buying_price;
 
-    const { lineProfit, costUnknown } = calculateLineProfit(finalUnitPrice, unitCost, line.qty);
+    const { lineProfit, costUnknown } = calculateLineProfit(
+      line.lineTotalOverride != null && line.qty > 0 ? toKES(Math.round(line.lineTotalOverride / line.qty)) : finalUnitPrice,
+      unitCost,
+      line.qty
+    );
 
     totalAmount = addKES(totalAmount, lineTotal);
     totalProfit = addKES(totalProfit, lineProfit);
     itemCount += line.qty;
+
+    const displayName = line.portionLabel
+      ? `${line.portionLabel} ${line.product.name}`
+      : line.product.name;
 
     const itemId = crypto.randomUUID();
     const saleItem: SaleItem = {
@@ -968,9 +1042,9 @@ export async function recordSale(saleData: {
       sale_id: saleId,
       shop_id: shop.shop_id,
       product_id: line.product.id,
-      product_name: line.product.name,
+      product_name: displayName,
       qty: line.qty,
-      unit_price: finalUnitPrice,
+      unit_price: line.lineTotalOverride != null && line.qty > 0 ? toKES(Math.round(line.lineTotalOverride / line.qty)) : finalUnitPrice,
       unit_cost: unitCost ?? toKES(0),
       cost_unknown: costUnknown,
       line_total: lineTotal,
@@ -1498,9 +1572,11 @@ export interface ShopUser {
 export interface StaffAttendant {
   id: string;
   name: string;
-  phone: string;
+  phone: string; // can be phone or email
+  email?: string;
   role: 'attendant';
   pin_hash: string;
+  status?: 'active' | 'invited';
   created_at: string;
 }
 
@@ -1513,13 +1589,126 @@ export async function addStaffAttendant(
   attendant: Omit<StaffAttendant, 'id' | 'created_at'>
 ): Promise<StaffAttendant> {
   const list = await getStaffAttendants();
+  if (list.length >= 2) {
+    throw new Error('Maximum limit reached: A shop can have a maximum of 2 attendants.');
+  }
+
+  const shop = await getShopMeta();
   const created: StaffAttendant = {
     ...attendant,
     id: crypto.randomUUID(),
+    status: attendant.status || 'active',
     created_at: serverNow(),
   };
-  await db.meta.put({ key: 'staff_attendants', value: [...list, created] });
+
+  const updatedList = [...list, created];
+  await db.meta.put({ key: 'staff_attendants', value: updatedList });
+
+  // Sync to Supabase staff_attendants table if configured
+  const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+  const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+  if (url && anonKey) {
+    fetch(`${url}/rest/v1/staff_attendants`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`,
+        Prefer: 'resolution=merge-duplicates',
+      },
+      body: JSON.stringify([
+        {
+          id: created.id,
+          shop_id: shop.shop_id,
+          name: created.name,
+          email: created.email || created.phone,
+          phone: created.phone,
+          role: 'attendant',
+          status: created.status,
+          created_at: created.created_at,
+        },
+      ]),
+    }).catch((err) => console.warn('Could not sync attendant to Supabase:', err));
+  }
+
   return created;
+}
+
+export async function removeStaffAttendant(id: string, emailOrPhone?: string): Promise<void> {
+  const list = await getStaffAttendants();
+  const filtered = list.filter((a) => a.id !== id && (emailOrPhone ? a.phone.toLowerCase() !== emailOrPhone.toLowerCase() && a.email?.toLowerCase() !== emailOrPhone.toLowerCase() : true));
+  await db.meta.put({ key: 'staff_attendants', value: filtered });
+
+  // Delete from Supabase REST staff_attendants, users & revoke credentials
+  const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+  const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+  if (url && anonKey) {
+    try {
+      // 1. Delete from staff_attendants table by ID
+      await fetch(`${url}/rest/v1/staff_attendants?id=eq.${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+      });
+
+      // 2. If email is known, delete from staff_attendants and users tables
+      if (emailOrPhone && emailOrPhone.includes('@')) {
+        const cleanEmail = emailOrPhone.trim().toLowerCase();
+        await fetch(`${url}/rest/v1/staff_attendants?email=eq.${encodeURIComponent(cleanEmail)}`, {
+          method: 'DELETE',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+          },
+        });
+
+        await fetch(`${url}/rest/v1/users?email=eq.${encodeURIComponent(cleanEmail)}`, {
+          method: 'DELETE',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+          },
+        });
+      }
+
+      // 3. Delete from users table by ID
+      await fetch(`${url}/rest/v1/users?id=eq.${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+      });
+
+      // 4. Call Supabase RPC delete_attendant_user if created
+      fetch(`${url}/rest/v1/rpc/delete_attendant_user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+        body: JSON.stringify({
+          p_attendant_id: id,
+          p_email: emailOrPhone || null,
+        }),
+      }).catch(() => {});
+
+      // 5. Call backend edge function to remove auth user credentials if edge function deployed
+      fetch(`${url}/functions/v1/delete-attendant-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: anonKey,
+        },
+        body: JSON.stringify({ attendant_id: id, email: emailOrPhone }),
+      }).catch(() => {});
+    } catch (e) {
+      console.warn('Could not delete attendant from Supabase:', e);
+    }
+  }
 }
 
 export async function getShopUser(): Promise<ShopUser | null> {
@@ -1532,7 +1721,7 @@ export async function getShopUser(): Promise<ShopUser | null> {
     name: val.name || 'Smartsort User',
     username: val.username || 'smartsort',
     email: val.email || 'smartsort@shop.com',
-    phone: val.phone || '0757706978',
+    phone: val.phone || '',
     role: (val.role as UserRole) || 'owner',
     onboarding_step: (val.onboarding_step as OnboardingStep) || 'contact',
     profile_completed_at: val.profile_completed_at || null,
@@ -1549,7 +1738,7 @@ export async function saveShopUser(user: Partial<ShopUser>): Promise<ShopUser> {
     name: 'Smartsort User',
     username: 'smartsort',
     email: 'smartsort@shop.com',
-    phone: '0757706978',
+    phone: '',
     role: 'owner' as UserRole,
     onboarding_step: 'contact' as OnboardingStep,
     profile_completed_at: null,
@@ -1559,6 +1748,50 @@ export async function saveShopUser(user: Partial<ShopUser>): Promise<ShopUser> {
   };
   const updated: ShopUser = { ...current, ...user, updated_at: serverNow() };
   await db.meta.put({ key: 'user_info', value: updated });
+
+  // Sync to Supabase users table and outbox
+  const now = serverNow();
+  try {
+    const userPayload = {
+      id: updated.id,
+      shop_id: updated.shop_id,
+      name: updated.name,
+      username: updated.username,
+      email: updated.email,
+      phone: updated.phone,
+      role: updated.role,
+      onboarding_step: updated.onboarding_step,
+      profile_completed_at: updated.profile_completed_at,
+      updated_at: now,
+    };
+
+    await db.outbox.add({
+      id: updated.id,
+      table: 'users',
+      op: 'update',
+      payload: userPayload as unknown as Record<string, unknown>,
+      attempts: 0,
+      next_attempt_at: now,
+    });
+
+    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+    if (url && anonKey) {
+      fetch(`${url}/rest/v1/users`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          Prefer: 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify([userPayload]),
+      }).catch((err) => console.warn('Direct Supabase user sync failed:', err));
+    }
+  } catch (e) {
+    console.warn('Could not queue user update to outbox:', e);
+  }
+
   return updated;
 }
 
@@ -1588,20 +1821,23 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
     shop_id: shopId,
     shop_name: 'Smartsort solutions',
     owner_name: 'Peter Ngecu',
-    phone: '0722334455',
+    phone: '',
     till_number: '6997912',
     role: 'owner',
     user_id: userId,
     avatar_emoji: '🏪',
     tagline: 'Leading Kenyan Retail Solutions',
     contact_email: 'peterngecu001@gmail.com',
+    alt_phone: null,
     county: 'Nairobi',
     sub_county: 'Westlands',
     town: 'Westlands',
-    landmark: 'Smartsort HQ',
-    pin_hash: adminPinHash,
+    landmark: 'Smartsort Center',
+    latitude: -1.2675,
+    longitude: 36.807,
+    location_captured_at: now,
     default_credit_limit: toKES(3000),
-    receipt_footer: 'Powered by Smartsort Solutions',
+    receipt_footer: 'Thank you for shopping with Smartsort solutions. Karibu tena!',
     business_cutoff_hour: 22,
     plan_code: 'daily_30',
     plan_name: 'Daily Access Plan (KES 30/day)',
@@ -1610,7 +1846,7 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
     subscription_paid_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     preferred_payment_method: 'mpesa',
     plan_acknowledged: true,
-    created_at: '2026-03-01T08:00:00Z',
+    created_at: now,
   };
 
   const user: ShopUser = {
@@ -1619,17 +1855,16 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
     name: 'Peter Ngecu',
     username: 'peterngecu',
     email: 'peterngecu001@gmail.com',
-    phone: '0722334455',
+    phone: '',
     role: 'owner',
     pin_hash: adminPinHash,
-    password_hash: 'SmartsortAdmin2026!',
-    onboarding_step: 'complete', // pre-completed profile for admin test account demo
-    profile_completed_at: '2026-03-01T08:00:00Z',
+    password_hash: 'admin2540',
+    onboarding_step: 'complete',
+    profile_completed_at: now,
     is_active: true,
-    created_at: '2026-03-01T08:00:00Z',
+    created_at: now,
     updated_at: now,
   };
-
   await db.meta.put({ key: 'shop_info', value: shop });
   await db.meta.put({ key: 'user_info', value: user });
 

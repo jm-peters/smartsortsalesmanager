@@ -14,6 +14,7 @@ import {
 import {
   saveShopMeta,
   saveShopUser,
+  getStaffAttendants,
   addStaffAttendant,
   type ShopMeta,
   type ShopUser,
@@ -208,10 +209,21 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
           return;
         }
 
+        const currentAttendants = await getStaffAttendants();
+        if (currentAttendants.length >= 2) {
+          setErrorMsg(
+            language === 'en'
+              ? 'Maximum limit reached: A shop can have a maximum of 2 attendants.'
+              : 'Kiwango cha juu cha wahudumu 2 kimefikiwa kwa duka hili.'
+          );
+          setSaving(false);
+          return;
+        }
+
         const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
         const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
 
-        // Pre-register user via Supabase OTP if configured
+        // Pre-register user via Supabase OTP or invite if configured
         if (url && anonKey) {
           try {
             await fetch(`${url}/auth/v1/otp`, {
@@ -233,12 +245,14 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
         await addStaffAttendant({
           name: attendantName.trim(),
           phone: cleanEmail,
+          email: cleanEmail,
           role: 'attendant',
           pin_hash: 'pending', // Marks as pending invite
+          status: 'invited',
         });
 
-        // Generate copyable invitation link
-        const link = `${window.location.origin}/#role=attendant&email=${encodeURIComponent(cleanEmail)}&name=${encodeURIComponent(attendantName.trim())}`;
+        // Generate copyable invitation link with shop_id
+        const link = `${window.location.origin}/#role=attendant&email=${encodeURIComponent(cleanEmail)}&name=${encodeURIComponent(attendantName.trim())}&shop_id=${encodeURIComponent(shop.shop_id)}`;
         setGeneratedLink(link);
         return; // Wait for user to copy link and dismiss
       }
@@ -567,25 +581,34 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
                       : 'Mhudumu amesajiliwa kwenye Supabase. Nakili kiunga hapa chini ili umtumie:'}
                   </p>
                   
-                  <div className="flex items-center gap-1.5 p-2 bg-white border border-emerald-300 rounded-xl">
-                    <input
-                      type="text"
-                      readOnly
-                      value={generatedLink}
-                      className="w-full text-[10px] font-mono text-slate-700 bg-transparent outline-none border-none select-all"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                          navigator.clipboard.writeText(generatedLink);
-                          window.alert(language === 'en' ? 'Link copied to clipboard!' : 'Kiunga kimenakiliwa!');
-                        }
-                      }}
-                      className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-[10px] font-bold active:scale-[0.98]"
+                  <div className="flex flex-col sm:flex-row items-center gap-2">
+                    <div className="flex items-center gap-1.5 p-2 bg-white border border-emerald-300 rounded-xl w-full flex-1">
+                      <input
+                        type="text"
+                        readOnly
+                        value={generatedLink}
+                        className="w-full text-[10px] font-mono text-slate-700 bg-transparent outline-none border-none select-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                            navigator.clipboard.writeText(generatedLink);
+                            window.alert(language === 'en' ? 'Link copied to clipboard!' : 'Kiunga kimenakiliwa!');
+                          }
+                        }}
+                        className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-[10px] font-bold active:scale-[0.98] shrink-0"
+                      >
+                        {language === 'en' ? 'Copy Link' : 'Nakili'}
+                      </button>
+                    </div>
+
+                    <a
+                      href={`mailto:${encodeURIComponent(attendantEmail.trim())}?subject=${encodeURIComponent(`Invitation to join ${shop.shop_name} on Smartsort`)}&body=${encodeURIComponent(`Hello ${attendantName.trim()},\n\nYou have been invited to join ${shop.shop_name} as an attendant on Smartsort.\n\nPlease click the link below to set up your account and access the shop:\n${generatedLink}\n\nKaribu!`)}`}
+                      className="w-full sm:w-auto px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold text-center transition flex items-center justify-center gap-1 shrink-0"
                     >
-                      {language === 'en' ? 'Copy' : 'Nakili'}
-                    </button>
+                      <span>📧 {language === 'en' ? 'Open Email' : 'Fungua Email'}</span>
+                    </a>
                   </div>
                   
                   <span className="text-[9px] text-slate-400 block pt-1">

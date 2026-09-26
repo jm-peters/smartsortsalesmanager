@@ -41,12 +41,21 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
   const isEn = language === 'en';
   const tillNumber = '6997912'; // Official SmartSort Buy Goods Till Number
 
+  const registeredPhone = (shop.phone || shop.alt_phone || '').trim();
+
   const [selectedPlanIndex, setSelectedPlanIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<'stk' | 'till'>('stk');
-  const [phone, setPhone] = useState(shop.phone || '0712345678');
+  const [phone, setPhone] = useState(registeredPhone);
   const [transactionCode, setTransactionCode] = useState('');
   const [copiedTill, setCopiedTill] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Keep phone synced with registered phone
+  React.useEffect(() => {
+    if (registeredPhone) {
+      setPhone(registeredPhone);
+    }
+  }, [registeredPhone]);
 
   // STK Push state machine: 'idle' | 'prompting' | 'success'
   const [stkStatus, setStkStatus] = useState<'idle' | 'prompting' | 'success'>('idle');
@@ -71,9 +80,18 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
 
   // Trigger STK Push
   const handleInitiateSTK = async () => {
-    const cleanPhone = phone.trim().replace(/\D/g, '');
+    if (!registeredPhone) {
+      setErrorMsg(
+        isEn
+          ? 'Please register your official phone number in your Profile settings first so we can track and link your payment.'
+          : 'Tafadhali sajili nambari yako ya simu kwenye Wasifu kwanza ili malipo yako yaweze kuunganishwa.'
+      );
+      return;
+    }
+
+    const cleanPhone = (phone || registeredPhone).trim().replace(/\D/g, '');
     if (cleanPhone.length < 9) {
-      setErrorMsg(isEn ? 'Please enter a valid M-Pesa phone number.' : 'Weka nambari halali ya M-Pesa.');
+      setErrorMsg(isEn ? 'Your registered phone number is invalid. Please update in Profile.' : 'Nambari ya simu iliyosajiliwa si sahihi. Sasisha kwenye Wasifu.');
       return;
     }
     setErrorMsg('');
@@ -83,7 +101,6 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
     // Simulate STK Push prompt delivery or call backend endpoint if configured
     try {
       // In production with live Daraja edge function, this posts to /functions/v1/mpesa-stk-push
-      // In development / offline, it reliably handles the simulation with 1-tap confirmation
     } finally {
       setIsProcessing(false);
     }
@@ -94,6 +111,11 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
     setIsProcessing(true);
     setErrorMsg('');
     try {
+      const targetPhone = (phone || registeredPhone).trim();
+      if (!targetPhone) {
+        throw new Error(isEn ? 'Registered phone number is required to track payment.' : 'Nambari ya simu inahitajika ili kufuatilia malipo.');
+      }
+
       const code = method === 'mpesa_stk'
         ? `STK-${Date.now().toString(36).toUpperCase()}`
         : transactionCode.trim().toUpperCase();
@@ -109,7 +131,7 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
         amount: currentPlan.kes,
         paymentMethod: method,
         transactionCode: code,
-        phone: phone.trim(),
+        phone: targetPhone,
       });
 
       setLastPaymentResult({
@@ -346,23 +368,49 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
               {/* TAB 1: M-Pesa STK Push */}
               {activeTab === 'stk' && (
                 <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {isEn ? 'M-Pesa Phone Number:' : 'Nambari ya Simu ya M-Pesa:'}
-                    </label>
-                    <input
-                      type="tel"
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="0712345678"
-                      className="w-full h-11 px-3 text-sm font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                    <span className="text-[11px] text-slate-500 mt-1 block">
-                      {isEn
-                        ? 'A payment prompt will appear instantly on this phone.'
-                        : 'Ujumbe wa kuweka PIN utatokea moja kwa moja kwenye simu hii.'}
-                    </span>
-                  </div>
+                  {registeredPhone ? (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-bold text-slate-700">
+                          {isEn ? 'Registered M-Pesa Number:' : 'Nambari ya Simu Iliyosajiliwa:'}
+                        </label>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                          <ShieldCheck className="w-3 h-3" />
+                          {isEn ? 'Verified Account' : 'Imethibitishwa'}
+                        </span>
+                      </div>
+                      <div className="w-full h-11 px-3.5 text-sm font-black bg-white border border-emerald-300 rounded-xl flex items-center justify-between shadow-xs">
+                        <span className="font-mono text-emerald-950 text-base">{registeredPhone}</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                          {isEn ? 'Locked' : 'Imefungwa'}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 mt-1.5 block leading-tight">
+                        {isEn
+                          ? '🔒 Locked to your registered phone to automatically verify payment and prevent missing records.'
+                          : '🔒 Imefungwa kwa namba yako ya duka ili kuhakikisha malipo yanatambuliwa papo hapo bila makosa.'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-left">
+                      <div className="flex items-center gap-1.5 text-xs font-black text-amber-900">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>{isEn ? 'No Registered Phone Number' : 'Hakuna Nambari Iliyosajiliwa'}</span>
+                      </div>
+                      <p className="text-[11px] text-amber-800 leading-relaxed">
+                        {isEn
+                          ? 'To protect your account and ensure your subscription is activated without delay, please enter your registered phone number in your Profile first.'
+                          : 'Ili kulinda akaunti yako na kuhakikisha huduma inawezeshwa mara moja, tafadhali weka nambari yako kwenye Wasifu kwanza.'}
+                      </p>
+                      <input
+                        type="tel"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="e.g. 0712345678"
+                        className="w-full h-10 px-3 text-sm font-bold bg-white border border-amber-300 rounded-lg focus:outline-none"
+                      />
+                    </div>
+                  )}
 
                   {errorMsg && (
                     <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold">
@@ -372,7 +420,7 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
 
                   <button
                     type="button"
-                    disabled={isProcessing}
+                    disabled={isProcessing || !phone}
                     onClick={handleInitiateSTK}
                     className="w-full h-12 rounded-xl bg-[#25D366] hover:bg-[#20ba5a] text-white font-black text-sm flex items-center justify-center gap-2 shadow-md active:scale-[0.98] transition cursor-pointer disabled:opacity-50"
                   >

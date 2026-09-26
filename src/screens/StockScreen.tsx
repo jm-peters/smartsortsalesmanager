@@ -11,6 +11,11 @@ import {
   Check,
   ArrowUpDown,
   FileSpreadsheet,
+  Sparkles,
+  Layers,
+  Scale,
+  PlusCircle,
+  XCircle,
 } from 'lucide-react';
 import {
   db,
@@ -39,6 +44,20 @@ interface StockScreenProps {
   language?: Language;
 }
 
+export interface FractionalPriceRow {
+  id: string;
+  qty: number;
+  label: string;
+  priceStr: string;
+}
+
+function getFractionLabel(qty: number, unitName: string = 'unit'): string {
+  if (qty === 0.25) return '¼ (Quarter / Robo)';
+  if (qty === 0.5) return '½ (Half / Nusu)';
+  if (qty === 0.75) return '¾ (Three-Quarter / Robo Tatu)';
+  return `${qty} ${unitName}`;
+}
+
 export const StockScreen: React.FC<StockScreenProps> = ({
   userRole,
   shopName,
@@ -65,6 +84,10 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   const [packSizeStr, setPackSizeStr] = useState('');
   const [emoji, setEmoji] = useState('📦');
 
+  // Fractional Prices (e.g. Sugar, Rice, Cooking Oil quarter & half quantities)
+  const [enableFractional, setEnableFractional] = useState(false);
+  const [fractionalRows, setFractionalRows] = useState<FractionalPriceRow[]>([]);
+
   // Modals
   const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
   const [isStockTakeModalOpen, setIsStockTakeModalOpen] = useState(false);
@@ -90,6 +113,45 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   const marginPerUnit = sellingNum - buyingNum;
   const marginPercent = calculateMarginPercent(toKES(sellingNum), toKES(buyingNum));
   const isLoss = sellingNum > 0 && buyingNum > 0 && sellingNum <= buyingNum;
+
+  // Auto-calculate suggested sub-unit prices based on selling price
+  const autoPopulateFractions = (baseSellPrice: number, currentUnit: string) => {
+    if (baseSellPrice <= 0) return;
+    const qPrice = Math.round(baseSellPrice * 0.28); // Standard slight retail markup on 1/4
+    const hPrice = Math.round(baseSellPrice * 0.53); // Standard slight retail markup on 1/2
+    const tPrice = Math.round(baseSellPrice * 0.78); // 3/4
+
+    setFractionalRows([
+      { id: 'frac-quarter', qty: 0.25, label: `¼ (Quarter / Robo)`, priceStr: String(qPrice) },
+      { id: 'frac-half', qty: 0.5, label: `½ (Half / Nusu)`, priceStr: String(hPrice) },
+      { id: 'frac-three-quarter', qty: 0.75, label: `¾ (Three-Quarter)`, priceStr: String(tPrice) },
+    ]);
+  };
+
+  const handleAddCustomFraction = () => {
+    const newId = crypto.randomUUID();
+    setFractionalRows((prev) => [
+      ...prev,
+      { id: newId, qty: 0.2, label: `Custom Portion`, priceStr: '' },
+    ]);
+  };
+
+  const handleRemoveFraction = (id: string) => {
+    setFractionalRows((prev) => prev.filter((r) => r.id !== id));
+  };
+
+  const handleFractionChange = (id: string, field: 'qty' | 'priceStr' | 'label', val: any) => {
+    setFractionalRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        if (field === 'qty') {
+          const num = Number(val);
+          return { ...r, qty: num, label: getFractionLabel(num, unit) };
+        }
+        return { ...r, [field]: val };
+      })
+    );
+  };
 
   // Filtered and sorted products
   const filteredProducts = useMemo(() => {
@@ -120,12 +182,46 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setEditingProduct(null);
     setName(template?.name || '');
     setBuyingPriceStr(template?.buyingPrice ? String(template.buyingPrice) : '');
-    setSellingPriceStr(template?.sellingPrice ? String(template.sellingPrice) : '');
+    const sellPrice = template?.sellingPrice ? String(template.sellingPrice) : '';
+    setSellingPriceStr(sellPrice);
     setInitialQtyStr(template?.initialQty ? String(template.initialQty) : '10');
-    setUnit(template?.unit || 'pcs');
+    const u = template?.unit || 'pcs';
+    setUnit(u);
     setLowLimitStr('5');
     setPackSizeStr('');
     setEmoji(template?.emoji || '📦');
+
+    if (template?.fractionalPrices && template.fractionalPrices.length > 0) {
+      setEnableFractional(true);
+      setFractionalRows(
+        template.fractionalPrices.map((fp) => ({
+          id: crypto.randomUUID(),
+          qty: fp.qty,
+          label: getFractionLabel(fp.qty, u),
+          priceStr: String(fp.price),
+        }))
+      );
+    } else {
+      const lowerName = (template?.name || '').toLowerCase();
+      const isBulkCandidate =
+        lowerName.includes('sugar') ||
+        lowerName.includes('sukari') ||
+        lowerName.includes('rice') ||
+        lowerName.includes('mchele') ||
+        lowerName.includes('oil') ||
+        lowerName.includes('mafuta') ||
+        u === 'kg' ||
+        u === 'ltr';
+
+      if (isBulkCandidate && template?.sellingPrice) {
+        setEnableFractional(true);
+        autoPopulateFractions(template.sellingPrice, u);
+      } else {
+        setEnableFractional(false);
+        setFractionalRows([]);
+      }
+    }
+
     setIsProductModalOpen(true);
   };
 
@@ -139,6 +235,22 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setLowLimitStr(String(p.low_limit));
     setPackSizeStr(p.pack_size ? String(p.pack_size) : '');
     setEmoji(p.image_emoji || '📦');
+
+    if (p.fractional_prices && p.fractional_prices.length > 0) {
+      setEnableFractional(true);
+      setFractionalRows(
+        p.fractional_prices.map((fp) => ({
+          id: crypto.randomUUID(),
+          qty: fp.qty,
+          label: getFractionLabel(fp.qty, p.unit),
+          priceStr: String(fp.price),
+        }))
+      );
+    } else {
+      setEnableFractional(false);
+      setFractionalRows([]);
+    }
+
     setIsProductModalOpen(true);
   };
 
@@ -159,6 +271,16 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     const lowLimit = Number(lowLimitStr) || 5;
     const packSize = packSizeStr ? Number(packSizeStr) : null;
 
+    const fractional_prices = enableFractional
+      ? fractionalRows
+          .filter((r) => r.qty > 0 && !isNaN(Number(r.priceStr)) && Number(r.priceStr) > 0)
+          .map((r) => ({
+            qty: Number(r.qty),
+            price: toKES(Number(r.priceStr)),
+          }))
+          .sort((a, b) => a.qty - b.qty)
+      : undefined;
+
     if (editingProduct) {
       // Update existing
       await db.transaction('rw', [db.products, db.outbox], async () => {
@@ -170,6 +292,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           low_limit: lowLimit,
           unit,
           pack_size: packSize,
+          fractional_prices,
           image_emoji: emoji,
           updated_at: now,
         };
@@ -199,6 +322,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         image_emoji: emoji,
         is_active: true,
         pack_size: packSize,
+        fractional_prices,
         created_at: now,
         updated_at: now,
         deleted_at: null,
@@ -546,6 +670,21 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                           )
                         )}
                       </div>
+                      {p.fractional_prices && p.fractional_prices.length > 0 && (
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-100/70 border border-emerald-300/80 px-1.5 py-0.5 rounded-md">
+                            ½ {isEn ? 'Sub-Units:' : 'Robo/Nusu:'}
+                          </span>
+                          {p.fractional_prices.map((fp, idx) => (
+                            <span
+                              key={idx}
+                              className="text-[10px] font-bold text-slate-700 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded-md tabular-nums"
+                            >
+                              {fp.qty === 0.25 ? '¼' : fp.qty === 0.5 ? '½' : fp.qty === 0.75 ? '¾' : `${fp.qty}${p.unit}`}: <strong className="text-emerald-700">{formatKES(fp.price)}</strong>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -752,6 +891,135 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                 placeholder={isEn ? 'Optional (e.g. 12 or 24)' : 'Hiari (mf. 12 au 24)'}
                 className="w-full h-11 px-3 text-xs bg-white border border-slate-300 rounded-xl"
               />
+            </div>
+          </div>
+
+          {/* Fractional / Sub-Unit Quantities & Pricing Section (Sugar, Rice, Cooking Oil, etc.) */}
+          <div className="pt-2 border-t border-slate-200">
+            <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-2xl p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs font-black shadow-2xs">
+                    ½
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black text-emerald-950">
+                      {isEn ? 'Sub-Unit / Fractional Prices' : 'Bei za Robo, Nusu na Vipimo Vidogo'}
+                    </h4>
+                    <p className="text-[10px] text-emerald-800">
+                      {isEn
+                        ? 'Sell in ¼ (quarter), ½ (half), ¾ or custom quantities (e.g. Sugar, Rice, Oil)'
+                        : 'Uza kwa robo (¼), nusu (½) au vipimo vingine (Sukari, Mchele, Mafuta)'}
+                    </p>
+                  </div>
+                </div>
+
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enableFractional}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setEnableFractional(enabled);
+                      if (enabled && fractionalRows.length === 0) {
+                        autoPopulateFractions(sellingNum, unit);
+                      }
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                </label>
+              </div>
+
+              {enableFractional && (
+                <div className="space-y-2.5 pt-2 border-t border-emerald-200/60">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-emerald-900">
+                      {isEn ? 'Configured Quantities & Selling Prices:' : 'Vipimo na Bei Zilizowekwa:'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => autoPopulateFractions(sellingNum, unit)}
+                      className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 bg-white/80 border border-emerald-300 px-2 py-1 rounded-lg flex items-center gap-1 active:scale-95 transition"
+                    >
+                      <Sparkles className="w-3 h-3 text-emerald-600" />
+                      {isEn ? 'Auto-fill Prices' : 'Kadiria Bei Kiotomatiki'}
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {fractionalRows.map((row) => (
+                      <div
+                        key={row.id}
+                        className="flex items-center gap-2 bg-white p-2 rounded-xl border border-emerald-200/80 shadow-2xs"
+                      >
+                        <div className="w-28">
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                            {isEn ? 'Qty (Decimal)' : 'Idadi (Kipimo)'}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0.01"
+                            value={row.qty}
+                            onChange={(e) =>
+                              handleFractionChange(row.id, 'qty', e.target.value)
+                            }
+                            className="w-full h-8 px-2 text-xs font-black bg-slate-50 border border-slate-200 rounded-lg tabular-nums focus:bg-white"
+                          />
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5 truncate">
+                            {row.label || getFractionLabel(row.qty, unit)}
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">
+                              KES
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder="0"
+                              value={row.priceStr}
+                              onChange={(e) =>
+                                handleFractionChange(row.id, 'priceStr', e.target.value)
+                              }
+                              className="w-full h-8 pl-9 pr-2 text-xs font-black text-emerald-800 bg-emerald-50/40 border border-emerald-300 rounded-lg tabular-nums focus:bg-white"
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFraction(row.id)}
+                          className="w-7 h-7 mt-3 flex items-center justify-center text-slate-400 hover:text-rose-600 active:scale-90 transition rounded-lg"
+                          title={isEn ? 'Remove portion' : 'Ondoa kipimo'}
+                        >
+                          <XCircle className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      onClick={handleAddCustomFraction}
+                      className="text-[11px] font-bold text-emerald-800 bg-white hover:bg-emerald-100/50 border border-emerald-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs active:scale-95 transition"
+                    >
+                      <PlusCircle className="w-3.5 h-3.5 text-emerald-600" />
+                      {isEn ? '+ Add Custom Sub-Unit' : '+ Ongeza Kipimo Kingine'}
+                    </button>
+
+                    <span className="text-[10px] text-slate-500 italic">
+                      {isEn
+                        ? `Full 1 ${unit} sells at KES ${sellingNum || 0}`
+                        : `Kipimo kizima cha 1 ${unit} ni KES ${sellingNum || 0}`}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

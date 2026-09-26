@@ -18,6 +18,8 @@ import {
   ShieldCheck,
   Copy,
   Calendar,
+  Trash2,
+  UserMinus,
 } from 'lucide-react';
 import {
   db,
@@ -27,6 +29,7 @@ import {
   getShopUser,
   saveShopUser,
   getStaffAttendants,
+  removeStaffAttendant,
   type ShopMeta,
   type ShopUser,
   type StaffAttendant,
@@ -142,6 +145,32 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [copyrightTaps, setCopyrightTaps] = useState(0);
   const [instalmentAmount, setInstalmentAmount] = useState<string>('');
   const [isPayingInstalment, setIsPayingInstalment] = useState(false);
+
+  const handleRemoveAttendant = async (attendant: StaffAttendant) => {
+    const confirmDelete = window.confirm(
+      language === 'en'
+        ? `Are you sure you want to remove attendant "${attendant.name}"? This will permanently delete their login credentials and revoke their access from Supabase.`
+        : `Una uhakika unataka kumwondoa mhudumu "${attendant.name}"? Hii itafuta akaunti yao na kuzuia kuingia kwenye mfumo.`
+    );
+    if (!confirmDelete) return;
+
+    try {
+      await removeStaffAttendant(attendant.id, attendant.phone || attendant.email);
+      const updatedList = await getStaffAttendants();
+      setStaffList(updatedList);
+      if (typeof window !== 'undefined') {
+        window.alert(
+          language === 'en'
+            ? `Attendant "${attendant.name}" removed successfully. Credentials deleted.`
+            : `Mhudumu "${attendant.name}" ameondolewa kikamilifu.`
+        );
+      }
+    } catch (err: any) {
+      if (typeof window !== 'undefined') {
+        window.alert(`Error removing attendant: ${err?.message || 'Could not remove'}`);
+      }
+    }
+  };
 
   // Inline editing state for Shop Name & Tagline (Doc 2 §3)
   const [isEditingName, setIsEditingName] = useState(false);
@@ -806,29 +835,64 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 {staffList.map((att) => (
                   <div
                     key={att.id}
-                    className="p-2.5 bg-slate-50 rounded-xl flex items-center justify-between"
+                    className="p-2.5 bg-slate-50 rounded-xl flex items-center justify-between border border-slate-100 hover:border-slate-200 transition"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">🧑‍💼</span>
-                      <div>
-                        <div className="font-bold text-slate-900">{att.name}</div>
-                        <div className="text-[10px] text-slate-400">{att.phone || 'Attendant'}</div>
+                    <div className="flex items-center gap-2 min-w-0 pr-2">
+                      <span className="text-lg shrink-0">🧑‍💼</span>
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 truncate flex items-center gap-1.5">
+                          <span className="truncate">{att.name}</span>
+                          {att.status === 'invited' && (
+                            <span className="px-1.5 py-0.2 rounded text-[8.5px] font-bold bg-amber-100 text-amber-800 uppercase tracking-wider">
+                              Invited
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-400 truncate">{att.email || att.phone || 'Attendant'}</div>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-800 uppercase">
-                      {t.attendant}
-                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-800 uppercase">
+                        {t.attendant}
+                      </span>
+                      {user.role === 'owner' && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAttendant(att)}
+                          className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition"
+                          title={language === 'en' ? 'Remove Attendant & Delete Login' : 'Ondoa Mhudumu'}
+                          aria-label={language === 'en' ? 'Remove Attendant' : 'Ondoa Mhudumu'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
 
-                <button
-                  type="button"
-                  onClick={() => setActiveStepModal('staff')}
-                  className="w-full mt-2 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
-                >
-                  <Users className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>{t.addStaffBtn}</span>
-                </button>
+                {user.role === 'owner' && (
+                  <>
+                    {staffList.length >= 2 ? (
+                      <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 font-medium flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          {language === 'en'
+                            ? 'Maximum limit of 2 staff attendants reached for this shop.'
+                            : 'Kiwango cha juu cha wahudumu 2 kimefikiwa kwa duka hili.'}
+                        </span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setActiveStepModal('staff')}
+                        className="w-full mt-2 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 active:scale-98"
+                      >
+                        <Users className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>{t.addStaffBtn} ({staffList.length}/2)</span>
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </div>

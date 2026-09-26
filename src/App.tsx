@@ -34,6 +34,8 @@ import { PWAInstallButton } from './components/PWAInstallButton';
 import { ProfileCompletionBanner } from './components/ProfileCompletionBanner';
 import { ProfileStepModal, type StepType } from './components/ProfileStepModal';
 import { PWAInstallModal } from './components/PWAInstallModal';
+import { SubscriptionPushBanner } from './components/SubscriptionPushBanner';
+import { SubscriptionPaymentModal } from './components/SubscriptionPaymentModal';
 import { translations, type Language } from './lib/i18n';
 
 type Tab = 'sell' | 'stock' | 'deni' | 'reports' | 'profile' | 'settings';
@@ -55,6 +57,7 @@ export default function App() {
 
   // Active step modal from completion banner
   const [activeStepModal, setActiveStepModal] = useState<StepType | null>(null);
+  const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
 
   const t = translations[language];
 
@@ -209,6 +212,13 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {/* Subscription Push Payment Banner */}
+        <SubscriptionPushBanner
+          shop={shop}
+          language={language}
+          onOpenPaymentModal={() => setIsSubscriptionModalOpen(true)}
+        />
 
         {/* Profile Completion Non-Blocking Banner (Doc 1 §6) */}
         {currentTab === 'sell' && (
@@ -387,6 +397,19 @@ export default function App() {
             onSuccess={(updatedShop, updatedUser) => {
               setShop(updatedShop);
               setUser(updatedUser);
+            }}
+          />
+        )}
+
+        {/* Subscription Payment Modal */}
+        {shop && (
+          <SubscriptionPaymentModal
+            isOpen={isSubscriptionModalOpen}
+            onClose={() => setIsSubscriptionModalOpen(false)}
+            shop={shop}
+            language={language}
+            onSubscriptionUpdated={(updatedShop) => {
+              setShop(updatedShop);
             }}
           />
         )}

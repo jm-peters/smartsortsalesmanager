@@ -10,6 +10,7 @@ export interface ProductStarterTemplate {
   buyingPrice?: number;
   unit: string;
   initialQty: number;
+  fractionalPrices?: { qty: number; price: number }[];
 }
 
 interface FirstProductGuideProps {
@@ -19,11 +20,45 @@ interface FirstProductGuideProps {
 }
 
 const STARTER_TEMPLATES: ProductStarterTemplate[] = [
-  { name: 'Sugar 1kg (Sukari)', emoji: '🧂', sellingPrice: 160, unit: 'kg', initialQty: 10 },
+  {
+    name: 'Sugar 1kg (Sukari)',
+    emoji: '🧂',
+    sellingPrice: 160,
+    unit: 'kg',
+    initialQty: 10,
+    fractionalPrices: [
+      { qty: 0.25, price: 45 },
+      { qty: 0.5, price: 80 },
+      { qty: 0.75, price: 120 },
+    ],
+  },
+  {
+    name: 'Rice 1kg (Mchele)',
+    emoji: '🍚',
+    sellingPrice: 200,
+    unit: 'kg',
+    initialQty: 10,
+    fractionalPrices: [
+      { qty: 0.25, price: 55 },
+      { qty: 0.5, price: 105 },
+      { qty: 0.75, price: 155 },
+    ],
+  },
+  {
+    name: 'Cooking Oil 1L (Mafuta)',
+    emoji: '🫒',
+    sellingPrice: 260,
+    unit: 'ltr',
+    initialQty: 8,
+    fractionalPrices: [
+      { qty: 0.25, price: 70 },
+      { qty: 0.5, price: 135 },
+      { qty: 0.75, price: 200 },
+    ],
+  },
   { name: 'Maize Flour 2kg (Unga)', emoji: '🌽', sellingPrice: 140, unit: 'pcs', initialQty: 12 },
   { name: 'Milk 500ml (Maziwa)', emoji: '🥛', sellingPrice: 65, unit: 'pkt', initialQty: 15 },
   { name: 'White Bread 400g (Mkate)', emoji: '🍞', sellingPrice: 65, unit: 'pcs', initialQty: 10 },
-  { name: 'Cooking Oil 1L (Mafuta)', emoji: '🫒', sellingPrice: 260, unit: 'ltr', initialQty: 8 },
   { name: 'Eggs (Mayai)', emoji: '🥚', sellingPrice: 18, unit: 'pcs', initialQty: 30 },
   { name: 'Bar Soap (Sabuni)', emoji: '🧼', sellingPrice: 35, unit: 'pcs', initialQty: 10 },
 ];
