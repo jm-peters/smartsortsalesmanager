@@ -19,6 +19,8 @@ import {
   Users,
   TrendingUp,
   Phone,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   db,
