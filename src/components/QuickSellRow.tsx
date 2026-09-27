@@ -10,6 +10,7 @@ interface QuickSellRowProps {
   isSearchActive: boolean;
   totalHistoricalSales: number;
   cartCounts?: Map<string, number>;
+  stockMap?: Map<string, number>;
 }
 
 export const QuickSellRow: React.FC<QuickSellRowProps> = ({
@@ -19,6 +20,7 @@ export const QuickSellRow: React.FC<QuickSellRowProps> = ({
   isSearchActive,
   totalHistoricalSales,
   cartCounts,
+  stockMap,
 }) => {
   // Hide if search is active or fewer than 20 historical sales (§Feature 2)
   if (isSearchActive) return null;
@@ -41,20 +43,36 @@ export const QuickSellRow: React.FC<QuickSellRowProps> = ({
       <div className="flex gap-2 overflow-x-auto no-scrollbar py-1 px-1">
         {displayed.map((p) => {
           const count = cartCounts?.get(p.id) ?? 0;
+          const currentStock = stockMap?.get(p.id) ?? 0;
+          const isOutOfStock = currentStock <= 0;
+
           return (
             <button
               key={p.id}
               type="button"
-              onClick={() => onSelectProduct(p)}
+              disabled={isOutOfStock}
+              onClick={() => {
+                if (!isOutOfStock) {
+                  onSelectProduct(p);
+                }
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 onTogglePin?.(p);
               }}
-              className={`flex-shrink-0 w-[108px] h-[80px] p-2 bg-white rounded-xl border shadow-xs active:scale-95 transition-all text-left flex flex-col justify-between relative group ${
-                count > 0 ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-50/20' : 'border-slate-200'
+              className={`flex-shrink-0 w-[114px] h-[84px] p-2 bg-white rounded-xl border shadow-xs transition-all text-left flex flex-col justify-between relative group ${
+                isOutOfStock
+                  ? 'opacity-60 bg-slate-50 border-rose-200 cursor-not-allowed'
+                  : count > 0
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-50/20 active:scale-95'
+                  : 'border-slate-200 hover:border-emerald-300 active:scale-95'
               }`}
             >
-              {count > 0 ? (
+              {isOutOfStock ? (
+                <span className="absolute top-1.5 right-1.5 px-1 py-0.5 rounded-full bg-rose-100 text-rose-800 font-black text-[9px] border border-rose-200 shadow-2xs">
+                  0
+                </span>
+              ) : count > 0 ? (
                 <span className="absolute top-1.5 right-1.5 min-w-5 h-5 px-1 rounded-full bg-emerald-600 text-white font-black text-[10px] flex items-center justify-center shadow-xs">
                   {count}
                 </span>
@@ -64,15 +82,20 @@ export const QuickSellRow: React.FC<QuickSellRowProps> = ({
                 </span>
               ) : null}
 
-              <div className="flex items-center gap-1.5 pr-4">
+              <div className="flex items-center gap-1.5 pr-3">
                 <span className="text-base leading-none shrink-0">{p.image_emoji || '📦'}</span>
                 <span className="text-xs font-bold text-slate-800 line-clamp-2 leading-tight">
                   {p.name}
                 </span>
               </div>
 
-              <div className="text-xs font-black text-emerald-700 tabular-nums">
-                {formatKES(p.selling_price)}
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-black text-emerald-700 tabular-nums">
+                  {formatKES(p.selling_price)}
+                </div>
+                {isOutOfStock && (
+                  <span className="text-[9px] font-bold text-rose-600">Imeisha</span>
+                )}
               </div>
             </button>
           );

@@ -28,8 +28,11 @@ import { Button } from '../components/Button';
 import { Sheet } from '../components/Sheet';
 import { NumPad } from '../components/NumPad';
 import { DebtorReminderModal } from '../components/DebtorReminderModal';
+import { DefaultedDebtClaimModal } from '../components/DefaultedDebtClaimModal';
 import {
   openDebtorWhatsApp,
+  isDebtDefaulted,
+  calculateDefaultCompensation,
   type DebtorReminderOptions,
 } from '../lib/reminder';
 import { translations, type Language } from '../lib/i18n';
@@ -52,7 +55,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
   const t = translations[language];
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'overdue'>('open');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'overdue' | 'defaulted'>('open');
 
   // Record Payment Sheet
   const [paymentDebt, setPaymentDebt] = useState<Debt | null>(null);
@@ -74,6 +77,9 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
   // Debtor WhatsApp Reminder State
   const [reminderDebt, setReminderDebt] = useState<Debt | null>(null);
   const [reminderToast, setReminderToast] = useState<{ message: string; debt: Debt } | null>(null);
+
+  // Defaulted Debt Helpline Claim Modal State (Feature: 2+ Months 70% Compensation)
+  const [claimDebt, setClaimDebt] = useState<Debt | null>(null);
 
   // Live queries
   const debts = useLiveQuery(
@@ -122,6 +128,24 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       .reduce((sum, d) => addKES(sum, subKES(d.principal, d.amount_paid)), toKES(0));
   }, [debts]);
 
+  // Defaulted Debts (Product debts unrecovered for 2+ months / >= 60 days)
+  const defaultedDebts = useMemo(() => {
+    const now = Date.now();
+    return debts.filter((d) => {
+      const balance = subKES(d.principal, d.amount_paid);
+      const isOpen = balance > 0 && d.status !== 'paid' && d.status !== 'written_off';
+      const days = Math.floor((now - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24));
+      return isOpen && isDebtDefaulted(days, balance);
+    });
+  }, [debts]);
+
+  const totalCompensationEligible = useMemo(() => {
+    return defaultedDebts.reduce((sum, d) => {
+      const balance = subKES(d.principal, d.amount_paid);
+      return sum + calculateDefaultCompensation(balance);
+    }, 0);
+  }, [defaultedDebts]);
+
   // Filtered debts
   const filteredDebts = useMemo(() => {
     const now = Date.now();
@@ -132,6 +156,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
 
       if (filterStatus === 'open' && !isOpen) return false;
       if (filterStatus === 'overdue' && (!isOpen || days < 30)) return false;
+      if (filterStatus === 'defaulted' && (!isOpen || days < 60)) return false;
 
       if (searchQuery.trim()) {
         const q = (searchQuery || '').toLowerCase();
@@ -413,7 +438,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
             />
           </div>
 
-          <div className="flex gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
               onClick={() => setFilterStatus('open')}
@@ -438,6 +463,22 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
             </button>
             <button
               type="button"
+              onClick={() => setFilterStatus('defaulted')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+                filterStatus === 'defaulted'
+                  ? 'bg-gradient-to-r from-amber-600 to-rose-600 text-white shadow-xs'
+                  : 'bg-amber-50 border border-amber-300 text-amber-900'
+              }`}
+            >
+              <span>{isEn ? 'Defaulted (2+ Mo / 70% Claim)' : 'Yaliyofifia (Miezi 2+ / Fidia 70%)'}</span>
+              {defaultedDebts.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-black">
+                  {defaultedDebts.length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setFilterStatus('all')}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
                 filterStatus === 'all'
@@ -449,6 +490,34 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
             </button>
           </div>
         </div>
+
+        {/* 70% Seller Compensation Alert Banner (When defaulted debts exist) */}
+        {defaultedDebts.length > 0 && filterStatus !== 'defaulted' && (
+          <div className="p-3.5 bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-amber-500/15 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-1.5 text-xs font-black text-amber-900">
+                <span className="text-sm">🛡️</span>
+                <span>
+                  {isEn
+                    ? `${defaultedDebts.length} Defaulted Product Debt(s) Eligible for 70% Compensation`
+                    : `Madeni ${defaultedDebts.length} Yaliyofifia Yanastahili Fidia ya 70%`}
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-800 leading-tight">
+                {isEn
+                  ? `Uncleared after 2 months. Total compensation entitlement: ${formatKES(totalCompensationEligible)}.`
+                  : `Hayajalipwa baada ya miezi 2. Jumla ya fidia unayostahili: ${formatKES(totalCompensationEligible)}.`}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFilterStatus('defaulted')}
+              className="px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shrink-0 shadow-xs cursor-pointer"
+            >
+              {isEn ? 'View & Claim' : 'Angalia Fidia'}
+            </button>
+          </div>
+        )}
 
         {/* Debts List */}
         {filteredDebts.length === 0 ? (
@@ -471,14 +540,17 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
               const daysOld = Math.floor(
                 (Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24)
               );
+              const isDefaulted = !isPaid && isDebtDefaulted(daysOld, balance);
+              const compAmount = calculateDefaultCompensation(balance);
 
               // Coloured Age Dot (§8.D)
-              const dotColor =
-                daysOld < 7
-                  ? 'bg-emerald-500'
-                  : daysOld < 30
-                  ? 'bg-amber-500'
-                  : 'bg-rose-600 animate-pulse';
+              const dotColor = isDefaulted
+                ? 'bg-rose-600 ring-2 ring-rose-300 animate-pulse'
+                : daysOld < 7
+                ? 'bg-emerald-500'
+                : daysOld < 30
+                ? 'bg-amber-500'
+                : 'bg-rose-600 animate-pulse';
 
               const customer = customerMap.get(d.customer_id);
               const limit = customer?.credit_limit ?? toKES(3000);
@@ -486,18 +558,32 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
               const limitUsagePercent = Math.min(100, Math.round((custTotal / limit) * 100));
 
               return (
-                <div key={d.id} className="p-3.5 space-y-2">
+                <div
+                  key={d.id}
+                  className={`p-3.5 space-y-2.5 transition ${
+                    isDefaulted ? 'bg-amber-50/40 border-l-4 border-l-rose-600' : ''
+                  }`}
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-2.5">
                       <span
                         className={`w-3 h-3 rounded-full mt-1 flex-shrink-0 ${dotColor}`}
-                        title={isEn ? `Debt is ${daysOld} days old` : `Deni hili lina siku ${daysOld}`}
+                        title={
+                          isDefaulted
+                            ? isEn ? 'Defaulted (2+ Months Overdue)' : 'Deni Lililofifia (Miezi 2+)'
+                            : isEn ? `Debt is ${daysOld} days old` : `Deni hili lina siku ${daysOld}`
+                        }
                       />
                       <div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-bold text-sm text-slate-900">
                             {d.customer_name}
                           </span>
+                          {isDefaulted && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-black uppercase tracking-wider border border-rose-200">
+                              {isEn ? '⚠️ Defaulted (2+ Mo)' : '⚠️ Lililofifia'}
+                            </span>
+                          )}
                           {customer && isOwner && (
                             <button
                               type="button"
@@ -514,7 +600,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
-                          <span className="flex items-center gap-1">
+                          <span className={`flex items-center gap-1 ${isDefaulted ? 'text-rose-700 font-bold' : ''}`}>
                             <Clock className="w-3 h-3" />
                             {daysOld === 0
                               ? isEn ? 'Today' : 'Leo'
@@ -546,8 +632,28 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                     </div>
                   </div>
 
+                  {/* 70% Compensation Policy Callout (Strictly for Defaulted debts >= 2 months) */}
+                  {isDefaulted && (
+                    <div className="p-2.5 bg-gradient-to-r from-amber-100 to-rose-50 border border-amber-300 rounded-xl space-y-1 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-black text-amber-900 flex items-center gap-1">
+                          <span>🛡️</span>
+                          <span>{isEn ? '70% Compensation Entitlement:' : 'Kiasi cha Fidia ya 70%:'}</span>
+                        </span>
+                        <span className="font-black text-emerald-800 text-sm tabular-nums">
+                          {formatKES(compAmount)}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-tight">
+                        {isEn
+                          ? 'This product debt has remained unpaid for over 2 months. You are eligible to claim 70% compensation via the helpline.'
+                          : 'Deni hili la bidhaa halijalipwa kwa zaidi ya miezi 2. Unastahiki kudai fidia ya 70% kupitia dawati la msaada.'}
+                      </p>
+                    </div>
+                  )}
+
                   {/* Customer Credit Limit Progress Bar (Feature 3) */}
-                  {!isPaid && (
+                  {!isPaid && !isDefaulted && (
                     <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
@@ -564,7 +670,20 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
 
                   {/* Action Buttons */}
                   {!isPaid && (
-                    <div className="flex items-center gap-1.5 pt-1 justify-end">
+                    <div className="flex items-center gap-1.5 pt-1 justify-end flex-wrap">
+                      {/* Defaulted 70% Helpline Claim Button (Only for defaulted debts) */}
+                      {isDefaulted && (
+                        <button
+                          type="button"
+                          onClick={() => setClaimDebt(d)}
+                          className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-700 hover:to-rose-700 text-white text-xs font-black shadow-xs active:scale-95 transition flex items-center gap-1.5 cursor-pointer"
+                          title={isEn ? 'Claim 70% compensation via Helpline' : 'Dai fidia ya 70% kupitia Msaada'}
+                        >
+                          <span>🛡️</span>
+                          <span>{isEn ? 'Claim 70% Compensation' : 'Dai Fidia 70%'}</span>
+                        </button>
+                      )}
+
                       {/* Remind via WhatsApp Button */}
                       <button
                         type="button"
@@ -795,6 +914,29 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
           tillNumber={tillNumber}
           language={language}
           onSavePhone={(newPhone) => handleSaveDebtorPhone(reminderDebt, newPhone)}
+        />
+      )}
+
+      {/* Defaulted Debt 70% Compensation Helpline Claim Modal (2+ Months Overdue) */}
+      {claimDebt && (
+        <DefaultedDebtClaimModal
+          isOpen={Boolean(claimDebt)}
+          onClose={() => setClaimDebt(null)}
+          debtId={claimDebt.id}
+          customerName={claimDebt.customer_name}
+          customerPhone={
+            claimDebt.customer_phone || customerMap.get(claimDebt.customer_id)?.phone
+          }
+          shopName={shopName}
+          principal={claimDebt.principal}
+          balance={subKES(claimDebt.principal, claimDebt.amount_paid)}
+          daysOld={Math.floor(
+            (Date.now() - new Date(claimDebt.created_at).getTime()) / (1000 * 60 * 60 * 24)
+          )}
+          compensationAmount={calculateDefaultCompensation(
+            subKES(claimDebt.principal, claimDebt.amount_paid)
+          )}
+          language={language}
         />
       )}
 

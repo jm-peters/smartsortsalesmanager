@@ -35,6 +35,7 @@ import {
 import { Button } from '../components/Button';
 import { Sheet } from '../components/Sheet';
 import { RestockListModal } from '../components/RestockListModal';
+import { SingleProductRestockModal } from '../components/SingleProductRestockModal';
 import { FirstProductGuide, type ProductStarterTemplate } from '../components/FirstProductGuide';
 import { translations, type Language } from '../lib/i18n';
 
@@ -73,6 +74,10 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   // Add/Edit Product Modal
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  // Single Product Restock Modal
+  const [restockingProduct, setRestockingProduct] = useState<Product | null>(null);
+  const [restockNotice, setRestockNotice] = useState<string | null>(null);
 
   // Form Fields
   const [name, setName] = useState('');
@@ -283,7 +288,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
 
     if (editingProduct) {
       // Update existing
-      await db.transaction('rw', [db.products, db.outbox], async () => {
+      await db.transaction('rw', [db.products, db.stock_movements, db.product_stock, db.outbox], async () => {
         const updateData: Partial<Product> = {
           name: name.trim(),
           search_key: generateSearchKey(name),
@@ -298,6 +303,50 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         };
 
         await db.products.update(productId, updateData);
+
+        // If user changed stock quantity directly in edit form, record adjustment
+        const newStockQty = Number(initialQtyStr);
+        if (!isNaN(newStockQty) && newStockQty >= 0) {
+          const currentStockEntry = await db.product_stock.get(productId);
+          const currentQty = currentStockEntry?.qty || 0;
+          const delta = newStockQty - currentQty;
+
+          if (delta !== 0) {
+            const movementId = crypto.randomUUID();
+            const movement: StockMovement = {
+              id: movementId,
+              shop_id: 'shop-active',
+              product_id: productId,
+              delta,
+              reason: 'adjustment',
+              ref_type: 'manual_adjustment',
+              ref_id: null,
+              unit_cost: buyingPrice ?? toKES(0),
+              note: `Stock adjustment: ${currentQty} -> ${newStockQty} ${unit}`,
+              created_at: now,
+              device_id: 'device-active',
+              created_by: 'user-active',
+            };
+
+            await db.stock_movements.put(movement);
+            await db.product_stock.put({
+              product_id: productId,
+              shop_id: 'shop-active',
+              qty: newStockQty,
+              updated_at: now,
+            });
+
+            await db.outbox.add({
+              id: movementId,
+              table: 'stock_movements',
+              op: 'insert',
+              payload: movement as unknown as Record<string, unknown>,
+              attempts: 0,
+              next_attempt_at: now,
+            });
+          }
+        }
+
         await db.outbox.add({
           id: productId,
           table: 'products',
@@ -539,6 +588,23 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         </button>
       </div>
 
+      {/* Restock Success Feedback Toast */}
+      {restockNotice && (
+        <div className="fixed top-16 left-4 right-4 z-40 max-w-[420px] mx-auto bg-emerald-900/95 backdrop-blur-md text-white p-3.5 rounded-2xl shadow-xl flex items-center justify-between animate-in slide-in-from-top duration-200 border border-emerald-700/60">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">✅</span>
+            <span className="text-xs font-bold leading-snug">{restockNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRestockNotice(null)}
+            className="p-1 text-emerald-200 hover:text-white text-xs font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <div className="p-4 space-y-4">
         {/* Low Stock Banner */}
         {lowStockProducts.length > 0 && (
@@ -565,11 +631,14 @@ export const StockScreen: React.FC<StockScreenProps> = ({
               {lowStockProducts.slice(0, 6).map((p) => {
                 const s = stockMap.get(p.id) ?? 0;
                 return (
-                  <div
+                  <button
                     key={p.id}
-                    className="flex-shrink-0 px-2.5 py-1.5 bg-white rounded-lg border border-amber-200 text-xs shadow-2xs"
+                    type="button"
+                    onClick={() => setRestockingProduct(p)}
+                    className="flex-shrink-0 px-2.5 py-1.5 bg-white hover:bg-emerald-50 rounded-lg border border-amber-200 hover:border-emerald-300 text-xs shadow-2xs flex items-center gap-1.5 transition active:scale-95 text-left"
+                    title={isEn ? `Tap to restock ${p.name}` : `Gusa kuongeza ${p.name}`}
                   >
-                    <span className="font-semibold text-slate-800 mr-1.5">
+                    <span className="font-semibold text-slate-800">
                       {p.name}
                     </span>
                     <span
@@ -579,7 +648,10 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                     >
                       {s} {p.unit}
                     </span>
-                  </div>
+                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1 rounded">
+                      +
+                    </span>
+                  </button>
                 );
               })}
             </div>
@@ -688,7 +760,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <div className="text-right">
                       <span
                         className={`inline-block text-xs font-black px-2 py-0.5 rounded-full tabular-nums ${
@@ -707,6 +779,17 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                         </div>
                       )}
                     </div>
+
+                    {/* Single Product Restock Quick Button */}
+                    <button
+                      type="button"
+                      onClick={() => setRestockingProduct(p)}
+                      className="h-8 px-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 flex items-center gap-1 text-xs font-bold transition active:scale-95 shadow-2xs"
+                      title={isEn ? `Restock ${p.name}` : `Ongeza mzigo wa ${p.name}`}
+                    >
+                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                      <span className="hidden sm:inline">{isEn ? 'Restock' : 'Ongeza'}</span>
+                    </button>
 
                     <button
                       type="button"
@@ -1182,6 +1265,25 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           </Button>
         </div>
       </Sheet>
+
+      {/* Single Product Individual Restock Modal */}
+      <SingleProductRestockModal
+        isOpen={Boolean(restockingProduct)}
+        onClose={() => setRestockingProduct(null)}
+        product={restockingProduct}
+        currentStock={restockingProduct ? (stockMap.get(restockingProduct.id) ?? 0) : 0}
+        language={language}
+        onRestockSuccess={(newStock, qtyAdded) => {
+          if (restockingProduct) {
+            setRestockNotice(
+              isEn
+                ? `Added +${qtyAdded} ${restockingProduct.unit} to ${restockingProduct.name}. New Stock: ${newStock} ${restockingProduct.unit}.`
+                : `Umeongeza +${qtyAdded} ${restockingProduct.unit} kwa ${restockingProduct.name}. Stock mpya: ${newStock} ${restockingProduct.unit}.`
+            );
+            setTimeout(() => setRestockNotice(null), 5000);
+          }
+        }}
+      />
     </div>
   );
 };

@@ -1545,6 +1545,138 @@ export async function recordBatchPurchase(
   });
 }
 
+/**
+ * Record Single Product Restock (Immediate individual stock addition)
+ */
+export async function recordSingleProductRestock(payload: {
+  productId: string;
+  qtyToAdd: number;
+  unitCost?: KES | null;
+  newSellingPrice?: KES | null;
+  paymentMethod?: 'cash' | 'mpesa' | 'credit' | 'none';
+  recordAsExpense?: boolean;
+  supplierNote?: string | null;
+}): Promise<{ newStock: number }> {
+  if (payload.qtyToAdd <= 0) {
+    throw new Error('Quantity to add must be greater than zero');
+  }
+
+  const shop = await getShopMeta();
+  const deviceId = await getOrCreateDeviceId();
+  const now = serverNow();
+  const activeSession = await getActiveCashSession();
+
+  const product = await db.products.get(payload.productId);
+  if (!product) throw new Error('Product not found');
+
+  const unitCost =
+    payload.unitCost !== undefined && payload.unitCost !== null
+      ? payload.unitCost
+      : (product.buying_price ?? toKES(0));
+
+  const movementId = crypto.randomUUID();
+  const movement: StockMovement = {
+    id: movementId,
+    shop_id: shop.shop_id,
+    product_id: payload.productId,
+    delta: payload.qtyToAdd,
+    reason: 'purchase',
+    ref_type: 'single_restock',
+    ref_id: null,
+    unit_cost: unitCost,
+    note: payload.supplierNote || `Restocked +${payload.qtyToAdd} ${product.unit}`,
+    created_at: now,
+    device_id: deviceId,
+    created_by: shop.user_id,
+  };
+
+  let newQty = 0;
+
+  await db.transaction(
+    'rw',
+    [db.products, db.stock_movements, db.product_stock, db.expenses, db.outbox],
+    async () => {
+      await db.stock_movements.put(movement);
+
+      const currentStockEntry = await db.product_stock.get(payload.productId);
+      newQty = (currentStockEntry?.qty || 0) + payload.qtyToAdd;
+
+      await db.product_stock.put({
+        product_id: payload.productId,
+        shop_id: shop.shop_id,
+        qty: newQty,
+        updated_at: now,
+      });
+
+      const productUpdates: Partial<Product> = { updated_at: now };
+      if (payload.unitCost !== undefined && payload.unitCost !== null && payload.unitCost > 0) {
+        productUpdates.buying_price = payload.unitCost;
+      }
+      if (payload.newSellingPrice !== undefined && payload.newSellingPrice !== null && payload.newSellingPrice > 0) {
+        productUpdates.selling_price = payload.newSellingPrice;
+      }
+
+      if (Object.keys(productUpdates).length > 1) {
+        await db.products.update(payload.productId, productUpdates);
+        await db.outbox.add({
+          id: payload.productId,
+          table: 'products',
+          op: 'update',
+          payload: { id: payload.productId, ...productUpdates },
+          attempts: 0,
+          next_attempt_at: now,
+        });
+      }
+
+      // Record as business expense if requested and cost > 0
+      if (
+        payload.recordAsExpense &&
+        unitCost > 0 &&
+        payload.qtyToAdd > 0 &&
+        (payload.paymentMethod === 'cash' || payload.paymentMethod === 'mpesa')
+      ) {
+        const totalExpenseAmount = mulKES(unitCost, payload.qtyToAdd);
+        const expenseId = crypto.randomUUID();
+        const expense: Expense = {
+          id: expenseId,
+          shop_id: shop.shop_id,
+          title: `Restock: ${product.name} (+${payload.qtyToAdd} ${product.unit})`,
+          amount: totalExpenseAmount,
+          category: 'stock',
+          payment_method: payload.paymentMethod,
+          is_cash_drop: false,
+          created_at: now,
+          updated_at: now,
+          deleted_at: null,
+          device_id: deviceId,
+          created_by: shop.user_id,
+          cash_session_id: activeSession.id,
+        };
+        await db.expenses.put(expense);
+        await db.outbox.add({
+          id: expenseId,
+          table: 'expenses',
+          op: 'insert',
+          payload: expense as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        });
+      }
+
+      await db.outbox.add({
+        id: movementId,
+        table: 'stock_movements',
+        op: 'insert',
+        payload: movement as unknown as Record<string, unknown>,
+        attempts: 0,
+        next_attempt_at: now,
+      });
+    }
+  );
+
+  return { newStock: newQty };
+}
+
 export const recalculateAllStock = recalculateStockFromLedger;
 export const seedKenyanCatalog = seedKenyanDukaDemo;
 

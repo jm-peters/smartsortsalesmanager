@@ -95,6 +95,50 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [confirmPin, setConfirmPin] = useState('');
   const [pinStep, setPinStep] = useState<'enter' | 'confirm'>('enter');
 
+  // Password Reset in Settings
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [passwordResetNotice, setPasswordResetNotice] = useState('');
+
+  const handleRequestPasswordResetFromSettings = async () => {
+    if (!currentUser?.email) {
+      if (typeof window !== 'undefined') {
+        window.alert(isEn ? 'No email registered for this account.' : 'Hakuna barua pepe iliyosajiliwa.');
+      }
+      return;
+    }
+    setIsResettingPassword(true);
+    setPasswordResetNotice('');
+    try {
+      const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+      const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+      if (url && anonKey) {
+        const resp = await fetch(`${url}/auth/v1/recover`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: anonKey },
+          body: JSON.stringify({
+            email: currentUser.email.toLowerCase(),
+            options: { redirectTo: typeof window !== 'undefined' ? window.location.origin : '' }
+          })
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.msg || err.message || 'Failed to send recovery email.');
+        }
+      }
+      setPasswordResetNotice(
+        isEn
+          ? `Password recovery instructions sent to ${currentUser.email}. Check your inbox!`
+          : `Maelekezo ya kuweka upya nenosiri yametumwa kwa ${currentUser.email}. Angalia barua pepe yako!`
+      );
+    } catch (err: any) {
+      if (typeof window !== 'undefined') {
+        window.alert(err.message || (isEn ? 'Failed to send reset link.' : 'Imeshindwa kutuma kiungo.'));
+      }
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
+
   // Load real metrics for peterngecu001@gmail.com
   useEffect(() => {
     async function loadRealMetrics() {
@@ -937,27 +981,55 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </div>
 
-        {/* Security / PIN */}
+        {/* Security / PIN & Password Management */}
         <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
-          <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
-            <Lock className="w-4 h-4 text-slate-700" />
-            <span>{isEn ? 'Security (Device PIN)' : 'Usalama wa Kifaa (PIN)'}</span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
+              <Lock className="w-4 h-4 text-slate-700" />
+              <span>{isEn ? 'Account Security & Password' : 'Usalama wa Akaunti & Nenosiri'}</span>
+            </div>
+            {currentUser?.email && (
+              <span className="text-[10px] text-slate-400 font-mono">
+                {currentUser.email}
+              </span>
+            )}
           </div>
 
-          <Button
-            variant="outline"
-            size="md"
-            fullWidth
-            onClick={() => {
-              setNewPin('');
-              setConfirmPin('');
-              setPinStep('enter');
-              setIsPinModalOpen(true);
-            }}
-            className="text-xs border-slate-300"
-          >
-            {isEn ? 'Change Quick Unlock PIN' : 'Badilisha PIN ya Kufungua Simu'}
-          </Button>
+          {passwordResetNotice && (
+            <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-semibold text-center leading-relaxed">
+              {passwordResetNotice}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <Button
+              variant="outline"
+              size="md"
+              fullWidth
+              disabled={isResettingPassword}
+              onClick={handleRequestPasswordResetFromSettings}
+              className="text-xs border-slate-300"
+            >
+              {isResettingPassword
+                ? (isEn ? 'Sending Reset Instructions...' : 'Inatuma Maelekezo...')
+                : (isEn ? 'Send Password Reset Link via Email (Supabase)' : 'Tuma Kiungo cha Nenosiri kwa Barua Pepe')}
+            </Button>
+
+            <Button
+              variant="outline"
+              size="md"
+              fullWidth
+              onClick={() => {
+                setNewPin('');
+                setConfirmPin('');
+                setPinStep('enter');
+                setIsPinModalOpen(true);
+              }}
+              className="text-xs border-slate-300"
+            >
+              {isEn ? 'Change Quick Unlock PIN' : 'Badilisha PIN ya Kufungua Simu'}
+            </Button>
+          </div>
 
           {/* Biometrics Toggle Button */}
           <button

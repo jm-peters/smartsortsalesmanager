@@ -48,8 +48,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 }) => {
   const t = translations[language];
 
-  // Modes: 'pin' (fast device unlock) | 'login' (username/email + password) | 'signup' (new account)
-  const [authMode, setAuthMode] = useState<'pin' | 'login' | 'signup'>('login');
+  // Modes: 'pin' (fast device unlock) | 'login' (username/email + password) | 'signup' (new account) | 'forgot_password' (reset)
+  const [authMode, setAuthMode] = useState<'pin' | 'login' | 'signup' | 'forgot_password'>('login');
   const [existingUser, setExistingUser] = useState<ShopUser | null>(null);
   const [existingShop, setExistingShop] = useState<Shop | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(
@@ -61,6 +61,19 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Forgot Password / Recovery States
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotOtp, setForgotOtp] = useState('');
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
+  const [forgotStep, setForgotStep] = useState<'request' | 'reset' | 'success'>('request');
+  const [isSendingReset, setIsSendingReset] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [forgotError, setForgotError] = useState('');
+  const [forgotSuccessNotice, setForgotSuccessNotice] = useState('');
+  const [recoverySessionToken, setRecoverySessionToken] = useState<string | null>(null);
+  const [showSupabaseSetupInfo, setShowSupabaseSetupInfo] = useState(false);
 
   // Fast Return PIN State
   const [pin, setPin] = useState('');
@@ -401,6 +414,21 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         const userData = await userResp.json();
         const emailVerified = userData.email || '';
 
+        // Check if this was a Supabase Password Recovery redirect (type=recovery)
+        const typeParam = params.get('type');
+        if (typeParam === 'recovery' || hash.includes('type=recovery')) {
+          setRecoverySessionToken(accessToken);
+          if (emailVerified) setForgotEmail(emailVerified);
+          setAuthMode('forgot_password');
+          setForgotStep('reset');
+          setForgotSuccessNotice(
+            language === 'en'
+              ? 'Password recovery link verified! Please enter your new password below.'
+              : 'Kiungo cha kurejesha nenosiri kimethibitishwa! Weka nenosiri lako jipya hapa chini.'
+          );
+          return;
+        }
+
         // Store the session in localStorage
         const expiresIn = expiresInStr ? parseInt(expiresInStr, 10) : 3600;
         const sessionData = {
@@ -592,6 +620,169 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       setLoginError(language === 'en' ? 'Biometric authentication failed.' : 'Kosa katika alama ya vidole.');
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  // Forgot Password: Step 1 - Send Recovery OTP / Link via Supabase Auth
+  const handleRequestPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError('');
+    setForgotSuccessNotice('');
+
+    let cleanEmail = forgotEmail.trim().toLowerCase();
+
+    // Check if input might be username instead of email
+    if (!cleanEmail.includes('@')) {
+      const localUser = await getShopUser();
+      if (localUser && (localUser.username?.toLowerCase() === cleanEmail || localUser.name?.toLowerCase() === cleanEmail)) {
+        if (localUser.email) {
+          cleanEmail = localUser.email.toLowerCase();
+          setForgotEmail(cleanEmail);
+        }
+      }
+    }
+
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setForgotError(
+        language === 'en'
+          ? 'Please enter a valid email address (e.g. duka@gmail.com).'
+          : 'Tafadhali weka barua pepe sahihi (mfano duka@gmail.com).'
+      );
+      return;
+    }
+
+    setIsSendingReset(true);
+
+    try {
+      const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+      const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+
+      if (url && anonKey) {
+        const resp = await fetch(`${url}/auth/v1/recover`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: anonKey,
+          },
+          body: JSON.stringify({
+            email: cleanEmail,
+            options: {
+              redirectTo: typeof window !== 'undefined' ? window.location.origin : '',
+            },
+          }),
+        });
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          throw new Error(errData.msg || errData.message || 'Failed to send password recovery email.');
+        }
+      }
+
+      setForgotSuccessNotice(
+        language === 'en'
+          ? `Password recovery code sent to ${cleanEmail}. Check your email and enter the verification code below.`
+          : `Nambari ya uthibitisho imetumwa kwa ${cleanEmail}. Angalia barua pepe yako kisha weka hapa chini.`
+      );
+      setForgotStep('reset');
+    } catch (err: any) {
+      setForgotError(err?.message || (language === 'en' ? 'Could not request password reset.' : 'Imeshindwa kutuma ombi.'));
+    } finally {
+      setIsSendingReset(false);
+    }
+  };
+
+  // Forgot Password: Step 2 - Verify OTP & Set New Password
+  const handleConfirmPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError('');
+
+    if (!recoverySessionToken && !forgotOtp.trim()) {
+      setForgotError(language === 'en' ? 'Please enter the verification code.' : 'Tafadhali weka nambari ya uthibitisho.');
+      return;
+    }
+
+    if (forgotNewPassword.length < 8) {
+      setForgotError(language === 'en' ? 'New password must be at least 8 characters.' : 'Nenosiri jipya lazima liwe na herufi 8 au zaidi.');
+      return;
+    }
+
+    if (forgotNewPassword !== forgotConfirmPassword) {
+      setForgotError(language === 'en' ? 'Passwords do not match.' : 'Nenosiri hailingani.');
+      return;
+    }
+
+    setIsResetting(true);
+
+    try {
+      const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+      const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+      const cleanEmail = forgotEmail.trim().toLowerCase();
+
+      let accessToken: string | null = recoverySessionToken;
+
+      if (url && anonKey) {
+        if (!accessToken) {
+          // Verify recovery OTP code
+          const verifyResp = await fetch(`${url}/auth/v1/verify`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: anonKey,
+            },
+            body: JSON.stringify({
+              type: 'recovery',
+              token: forgotOtp.trim(),
+              email: cleanEmail,
+            }),
+          });
+
+          if (!verifyResp.ok) {
+            const errData = await verifyResp.json().catch(() => ({}));
+            throw new Error(errData.msg || errData.message || 'Invalid or expired recovery code.');
+          }
+
+          const authData = await verifyResp.json();
+          accessToken = authData.access_token || authData.session?.access_token;
+        }
+
+        if (accessToken) {
+          const updateResp = await fetch(`${url}/auth/v1/user`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: anonKey,
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              password: forgotNewPassword,
+            }),
+          });
+
+          if (!updateResp.ok) {
+            const updErr = await updateResp.json().catch(() => ({}));
+            throw new Error(updErr.msg || updErr.message || 'Could not update password on server.');
+          }
+        }
+      }
+
+      // Update local Dexie database if matching user exists
+      const localUser = await getShopUser();
+      if (localUser && (localUser.email === cleanEmail || !localUser.email)) {
+        await saveShopUser({
+          password_hash: forgotNewPassword,
+        });
+      }
+
+      setForgotStep('success');
+      setForgotSuccessNotice(
+        language === 'en'
+          ? 'Your password has been successfully reset! You can now log in with your new password.'
+          : 'Nenosiri lako limewekwa upya kikamilifu! Sasa unaweza kuingia kwa nenosiri lako jipya.'
+      );
+    } catch (err: any) {
+      setForgotError(err?.message || (language === 'en' ? 'Failed to reset password.' : 'Kosa katika kuweka upya nenosiri.'));
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -1575,6 +1766,23 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 {t.orUsePassword}
               </button>
 
+              <button
+                type="button"
+                onClick={() => {
+                  setForgotEmail(existingUser?.email || '');
+                  setForgotOtp('');
+                  setForgotNewPassword('');
+                  setForgotConfirmPassword('');
+                  setForgotError('');
+                  setForgotSuccessNotice('');
+                  setForgotStep('request');
+                  setAuthMode('forgot_password');
+                }}
+                className="text-xs font-bold text-slate-500 hover:text-emerald-700 underline"
+              >
+                {language === 'en' ? 'Forgot Password or PIN? Reset Account' : 'Umesahau Nenosiri au PIN? Weka Upya'}
+              </button>
+
               <span className="text-[11px] text-slate-400">
                 Default PIN: <strong className="text-slate-600">1234</strong>
               </span>
@@ -1624,9 +1832,27 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {language === 'en' ? 'Password' : 'Password'}
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    {language === 'en' ? 'Password' : 'Password'}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotEmail(loginIdentifier.includes('@') ? loginIdentifier.trim() : '');
+                      setForgotOtp('');
+                      setForgotNewPassword('');
+                      setForgotConfirmPassword('');
+                      setForgotError('');
+                      setForgotSuccessNotice('');
+                      setForgotStep('request');
+                      setAuthMode('forgot_password');
+                    }}
+                    className="text-[11px] font-bold text-emerald-700 hover:underline cursor-pointer"
+                  >
+                    {language === 'en' ? 'Forgot Password?' : 'Umesahau Nenosiri?'}
+                  </button>
+                </div>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
                   <input
@@ -2057,6 +2283,263 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 className="font-bold text-emerald-700 hover:underline ml-1"
               >
                 {t.signInBtn}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* MODE 4: Forgot Password / Password Reset (Supabase Auth Recovery) */}
+        {authMode === 'forgot_password' && (
+          <div className="space-y-4 animate-in fade-in duration-200">
+            <div>
+              <h2 className="text-xl font-black text-slate-900 leading-tight">
+                {language === 'en' ? 'Reset Password' : 'Weka Upya Nenosiri'}
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                {language === 'en'
+                  ? 'Enter your registered email address to receive a recovery code and reset your password.'
+                  : 'Weka barua pepe yako uliyojisajili nayo ili kupata msimbo wa kuweka upya nenosiri.'}
+              </p>
+            </div>
+
+            {forgotError && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold text-center">
+                {forgotError}
+              </div>
+            )}
+
+            {forgotSuccessNotice && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-semibold text-center leading-relaxed">
+                {forgotSuccessNotice}
+              </div>
+            )}
+
+            {/* Step 1: Request Reset Code */}
+            {forgotStep === 'request' && (
+              <form onSubmit={handleRequestPasswordReset} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {language === 'en' ? 'Registered Email Address' : 'Barua Pepe ya Akaunti'} *
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
+                    <input
+                      type="email"
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      placeholder="e.g. duka@gmail.com"
+                      className="w-full h-11 pl-9 pr-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                      required
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  type="submit"
+                  variant="gradient"
+                  size="hero"
+                  fullWidth
+                  disabled={isSendingReset || !forgotEmail.trim()}
+                >
+                  {isSendingReset ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-1.5" />
+                      <span>{language === 'en' ? 'Sending Code...' : 'Inatuma Msimbo...'}</span>
+                    </>
+                  ) : (
+                    language === 'en' ? 'Send Recovery Code' : 'Tuma Msimbo wa Siri'
+                  )}
+                </Button>
+
+                <div className="text-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotStep('reset');
+                      setForgotError('');
+                    }}
+                    className="text-xs text-slate-500 hover:text-emerald-700 font-semibold underline"
+                  >
+                    {language === 'en' ? 'Already have a recovery code? Enter it here' : 'Tayari unayo nambari ya siri? Weka hapa'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Step 2: Enter Code + New Password */}
+            {forgotStep === 'reset' && (
+              <form onSubmit={handleConfirmPasswordReset} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {language === 'en' ? 'Email Address' : 'Barua Pepe'} *
+                  </label>
+                  <input
+                    type="email"
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    placeholder="duka@gmail.com"
+                    className="w-full h-10 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {language === 'en' ? '6-Digit Verification Code (OTP / Token)' : 'Nambari ya Uthibitisho (Msimbo wa Barua Pepe)'} *
+                  </label>
+                  <input
+                    type="text"
+                    value={forgotOtp}
+                    onChange={(e) => setForgotOtp(e.target.value)}
+                    placeholder="e.g. 123456"
+                    className="w-full h-11 px-3 text-base font-mono font-bold tracking-widest text-center bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                    required
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {language === 'en' ? 'New Password (min 8 chars)' : 'Nenosiri Jipya (herufi 8+)'} *
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
+                    <input
+                      type="password"
+                      value={forgotNewPassword}
+                      onChange={(e) => setForgotNewPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full h-11 pl-9 pr-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {language === 'en' ? 'Confirm New Password' : 'Thibitisha Nenosiri Jipya'} *
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
+                    <input
+                      type="password"
+                      value={forgotConfirmPassword}
+                      onChange={(e) => setForgotConfirmPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full h-11 pl-9 pr-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  type="submit"
+                  variant="gradient"
+                  size="hero"
+                  fullWidth
+                  disabled={isResetting}
+                >
+                  {isResetting ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-1.5" />
+                      <span>{language === 'en' ? 'Updating Password...' : 'Inabadilisha...'}</span>
+                    </>
+                  ) : (
+                    language === 'en' ? 'Set New Password & Save' : 'Hifadhi Nenosiri Jipya'
+                  )}
+                </Button>
+
+                <div className="flex items-center justify-between text-xs pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotStep('request');
+                      setForgotError('');
+                    }}
+                    className="font-bold text-slate-500 hover:text-slate-800"
+                  >
+                    ← {language === 'en' ? 'Resend code' : 'Tuma tena msimbo'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Step 3: Success */}
+            {forgotStep === 'success' && (
+              <div className="space-y-4 text-center pt-2">
+                <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mx-auto">
+                  ✓
+                </div>
+                <h3 className="text-base font-black text-slate-900">
+                  {language === 'en' ? 'Password Changed Successfully!' : 'Nenosiri Limebadilishwa Salama!'}
+                </h3>
+                <Button
+                  type="button"
+                  variant="gradient"
+                  size="hero"
+                  fullWidth
+                  onClick={() => {
+                    setLoginIdentifier(forgotEmail);
+                    setLoginPassword('');
+                    setAuthMode('login');
+                  }}
+                >
+                  {language === 'en' ? 'Proceed to Sign In' : 'Endelea Kuingia'}
+                </Button>
+              </div>
+            )}
+
+            {/* Supabase Password Reset Integration Note & Setup Guidance */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSupabaseSetupInfo(!showSupabaseSetupInfo)}
+                className="w-full text-[11px] font-semibold text-slate-500 hover:text-emerald-700 flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-200 transition"
+              >
+                <span className="flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>{language === 'en' ? 'Supabase Password Reset Setup Notes' : 'Maelezo ya Supabase Reset'}</span>
+                </span>
+                <span className="text-xs font-mono">{showSupabaseSetupInfo ? '▲' : '▼'}</span>
+              </button>
+
+              {showSupabaseSetupInfo && (
+                <div className="mt-2 p-3 bg-slate-900 text-slate-200 rounded-xl text-[11px] space-y-2 border border-slate-800 animate-in fade-in duration-150">
+                  <div className="font-bold text-emerald-400">
+                    {language === 'en' ? 'Expected Supabase Configuration:' : 'Mipangilio Inayohitajika Supabase:'}
+                  </div>
+                  <ul className="list-disc pl-4 space-y-1 text-slate-300 text-[10.5px] leading-relaxed">
+                    <li>
+                      <strong>Auth Provider:</strong> Ensure <em>Email</em> auth is enabled in <em>Authentication → Providers → Email</em>.
+                    </li>
+                    <li>
+                      <strong>Redirect URLs:</strong> In <em>Authentication → URL Configuration</em>, add your domain origin (e.g. <code>https://your-app-domain.run.app</code>) to <strong>Redirect URLs</strong>.
+                    </li>
+                    <li>
+                      <strong>Reset Email Template:</strong> In <em>Authentication → Email Templates → Reset Password</em>, the redirect target should be <code>{'{{ .SiteURL }}'}</code>.
+                    </li>
+                    <li>
+                      <strong>Production SMTP:</strong> In production, configure custom SMTP in <em>Authentication → SMTP Settings</em> to prevent the default 3 emails/hour development rate limit.
+                    </li>
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Back to Login */}
+            <div className="text-center pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setForgotError('');
+                  setForgotSuccessNotice('');
+                  setAuthMode('login');
+                }}
+                className="text-xs font-bold text-slate-600 hover:text-emerald-700 flex items-center justify-center gap-1 mx-auto"
+              >
+                <span>←</span>
+                <span>{language === 'en' ? 'Back to Sign In' : 'Rudi Kwenye Kuingia'}</span>
               </button>
             </div>
           </div>

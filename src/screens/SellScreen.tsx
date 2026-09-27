@@ -113,6 +113,17 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   const [customFractionQtyStr, setCustomFractionQtyStr] = useState<string>('0.5');
   const [customFractionPriceStr, setCustomFractionPriceStr] = useState<string>('');
 
+  // Stock Warning Toast
+  const [stockWarningToast, setStockWarningToast] = useState<string | null>(null);
+
+  const showStockWarning = (msg: string) => {
+    if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+      window.navigator.vibrate([30, 50, 30]);
+    }
+    setStockWarningToast(msg);
+    setTimeout(() => setStockWarningToast(null), 3500);
+  };
+
   // Sale Success Toast & Persistent Recent Receipt
   const [lastSale, setLastSale] = useState<CompletedSaleState | null>(null);
   const [recentReceipt, setRecentReceipt] = useState<CompletedSaleState | null>(null);
@@ -297,6 +308,26 @@ export const SellScreen: React.FC<SellScreenProps> = ({
 
   // Add 1 whole product to cart or increment
   const addToCart = (product: Product) => {
+    const currentStock = stockMap.get(product.id) ?? 0;
+    if (currentStock <= 0) {
+      showStockWarning(
+        isEn
+          ? `Cannot sell "${product.name}": Product is out of stock (0 ${product.unit}).`
+          : `Huwezi kuuza "${product.name}": Bidhaa hii imeisha dukani (0 ${product.unit}).`
+      );
+      return;
+    }
+
+    const currentTotalInCart = cartCounts.get(product.id) || 0;
+    if (currentTotalInCart + 1 > currentStock) {
+      showStockWarning(
+        isEn
+          ? `Stock limit reached: Only ${currentStock} ${product.unit} available for "${product.name}".`
+          : `Kiwango cha juu cha stock: Zimebaki ${currentStock} ${product.unit} tu za "${product.name}".`
+      );
+      return;
+    }
+
     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(10);
     }
@@ -331,6 +362,26 @@ export const SellScreen: React.FC<SellScreenProps> = ({
     price: KES,
     portionLabel?: string
   ) => {
+    const currentStock = stockMap.get(product.id) ?? 0;
+    if (currentStock <= 0) {
+      showStockWarning(
+        isEn
+          ? `Cannot sell "${product.name}": Product is out of stock (0 ${product.unit}).`
+          : `Huwezi kuuza "${product.name}": Bidhaa hii imeisha dukani (0 ${product.unit}).`
+      );
+      return;
+    }
+
+    const currentTotalInCart = cartCounts.get(product.id) || 0;
+    if (currentTotalInCart + qty > currentStock) {
+      showStockWarning(
+        isEn
+          ? `Stock limit reached: Only ${currentStock} ${product.unit} available for "${product.name}".`
+          : `Kiwango cha juu cha stock: Zimebaki ${currentStock} ${product.unit} tu za "${product.name}".`
+      );
+      return;
+    }
+
     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(12);
     }
@@ -373,6 +424,16 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   };
 
   const handleProductCardClick = (product: Product) => {
+    const currentStock = stockMap.get(product.id) ?? 0;
+    if (currentStock <= 0) {
+      showStockWarning(
+        isEn
+          ? `"${product.name}" is out of stock (0 ${product.unit}). Restock it first in the Stock tab.`
+          : `"${product.name}" imeisha dukani (0 ${product.unit}). Ongeza mzigo kwanza kwenye menyu ya Stock.`
+      );
+      return;
+    }
+
     if (product.fractional_prices && product.fractional_prices.length > 0) {
       setFractionalModalProduct(product);
       setCustomFractionQtyStr('0.5');
@@ -383,6 +444,20 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   };
 
   const updateCartQty = (productId: string, delta: number, portionLabel?: string) => {
+    if (delta > 0) {
+      const currentStock = stockMap.get(productId) ?? 0;
+      const currentTotalInCart = cartCounts.get(productId) || 0;
+      if (currentTotalInCart + delta > currentStock) {
+        const product = products.find((p) => p.id === productId);
+        showStockWarning(
+          isEn
+            ? `Stock limit reached: Only ${currentStock} ${product?.unit || 'items'} available.`
+            : `Kiwango cha juu cha stock: Zimebaki ${currentStock} ${product?.unit || 'tu'}.`
+        );
+        return;
+      }
+    }
+
     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
       window.navigator.vibrate(10);
     }
@@ -523,6 +598,28 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   };
 
   const handleConfirmSale = async (overrideReason?: string) => {
+    // Strict Stock Pre-flight Check: Ensure every item in cart has sufficient stock
+    for (const item of cart) {
+      const available = stockMap.get(item.product.id) ?? 0;
+      const totalInCart = cartCounts.get(item.product.id) || item.qty;
+      if (available <= 0) {
+        alert(
+          language === 'en'
+            ? `Cannot complete sale: "${item.product.name}" is out of stock (0 ${item.product.unit}). Please remove it from the cart.`
+            : `Haiwezi kukamilisha: "${item.product.name}" imeisha dukani (0 ${item.product.unit}). Tafadhali iondoe kwenye kikapu.`
+        );
+        return;
+      }
+      if (totalInCart > available) {
+        alert(
+          language === 'en'
+            ? `Cannot complete sale: "${item.product.name}" requested ${totalInCart} ${item.product.unit}, but only ${available} available in stock.`
+            : `Haiwezi kukamilisha: "${item.product.name}" inahitaji ${totalInCart} ${item.product.unit}, lakini zimebaki ${available} tu dukani.`
+        );
+        return;
+      }
+    }
+
     if (selectedPaymentMethod === 'cash' && isUnderpaid) {
       alert(
         language === 'en'
@@ -703,6 +800,23 @@ export const SellScreen: React.FC<SellScreenProps> = ({
 
   return (
     <div className="flex flex-col min-h-full pb-28 select-none">
+      {/* Stock Limit & Out-of-stock Warning Toast */}
+      {stockWarningToast && (
+        <div className="fixed top-16 left-4 right-4 z-40 max-w-[420px] mx-auto bg-rose-900/95 backdrop-blur-md text-white p-3.5 rounded-2xl shadow-xl flex items-center justify-between animate-in slide-in-from-top duration-200 border border-rose-700/60">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">⚠️</span>
+            <span className="text-xs font-bold leading-snug">{stockWarningToast}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStockWarningToast(null)}
+            className="p-1 text-rose-200 hover:text-white text-xs font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Search Header Bar */}
       <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-xs border-b border-slate-200 px-4 py-2.5">
         <div className="flex items-center gap-2">
@@ -770,6 +884,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           isSearchActive={searchQuery.trim().length > 0}
           totalHistoricalSales={totalSalesCount}
           cartCounts={cartCounts}
+          stockMap={stockMap}
         />
 
         {/* 2-Column Product Grid or First Product Guide */}
@@ -818,12 +933,14 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                     if (cartItem) {
                       setEditingItem(cartItem);
                       setOverridePriceStr(String(cartItem.overridePrice ?? cartItem.unitPrice));
-                    } else if (hasFractional) {
+                    } else if (hasFractional && !isOutOfStock) {
                       setFractionalModalProduct(product);
                     }
                   }}
-                  className={`bg-white rounded-2xl p-3 border border-slate-200 shadow-xs flex flex-col justify-between active:scale-[0.98] transition-all relative overflow-hidden cursor-pointer ${
-                    isOutOfStock ? 'opacity-70 bg-slate-50/80' : ''
+                  className={`bg-white rounded-2xl p-3 border shadow-xs flex flex-col justify-between transition-all relative overflow-hidden ${
+                    isOutOfStock
+                      ? 'opacity-65 bg-slate-50 border-rose-200 cursor-not-allowed select-none'
+                      : 'border-slate-200 active:scale-[0.98] cursor-pointer'
                   } ${cartItem || fractionalCartItems.length > 0 ? 'ring-2 ring-emerald-500 border-emerald-500' : ''}`}
                 >
                   {/* Stock Alert Badge & Quick Deselect (Cancel All) */}
@@ -848,7 +965,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                     <span
                       className={`text-[10px] font-black px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
                         isOutOfStock
-                          ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                          ? 'bg-rose-100 text-rose-800 border border-rose-300'
                           : isLowStock
                           ? 'bg-amber-100 text-amber-900 border border-amber-200'
                           : 'bg-emerald-50 text-emerald-800'
@@ -856,7 +973,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                     >
                       {isOutOfStock && <AlertTriangle className="w-2.5 h-2.5 mr-0.5" />}
                       {isOutOfStock
-                        ? '0 (Imeisha)'
+                        ? (isEn ? '0 (Out of stock)' : '0 (Imeisha)')
                         : `${currentStock} ${product.unit}`}
                     </span>
                   </div>
@@ -882,7 +999,11 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                       {formatKES(product.selling_price)}
                     </div>
 
-                    {cartItem ? (
+                    {isOutOfStock ? (
+                      <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10px] font-black border border-rose-200">
+                        {isEn ? 'Out of stock' : 'Imeisha'}
+                      </span>
+                    ) : cartItem ? (
                       <div
                         className="flex items-center bg-emerald-50 border border-emerald-300 rounded-xl p-0.5 shadow-2xs"
                         onClick={(e) => e.stopPropagation()}
@@ -941,7 +1062,6 @@ export const SellScreen: React.FC<SellScreenProps> = ({
             })}
           </div>
         )}
-
       </div>
 
       {/* Void Success Notification Toast */}
