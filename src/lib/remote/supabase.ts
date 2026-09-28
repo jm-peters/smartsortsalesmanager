@@ -25,6 +25,28 @@ export class SupabaseAdapter implements RemoteAdapter {
     return Boolean(this.url && this.anonKey);
   }
 
+  private getAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    let token = this.anonKey;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const sessionStr = localStorage.getItem('smartsort_session');
+        if (sessionStr) {
+          const parsed = JSON.parse(sessionStr);
+          if (parsed?.accessToken && !String(parsed.accessToken).startsWith('local-')) {
+            token = parsed.accessToken;
+          }
+        }
+      }
+    } catch {
+      // fallback to anonKey
+    }
+    return {
+      apikey: this.anonKey,
+      Authorization: `Bearer ${token}`,
+      ...extra,
+    };
+  }
+
   async getServerTime(): Promise<{ serverTimeMs: number }> {
     if (!this.isConfigured()) {
       return { serverTimeMs: Date.now() };
@@ -33,9 +55,7 @@ export class SupabaseAdapter implements RemoteAdapter {
     try {
       const resp = await fetch(`${this.url}/rest/v1/`, {
         method: 'HEAD',
-        headers: {
-          apikey: this.anonKey,
-        },
+        headers: this.getAuthHeaders(),
       });
       const dateHeader = resp.headers.get('date');
       if (dateHeader) {
@@ -52,33 +72,87 @@ export class SupabaseAdapter implements RemoteAdapter {
     rows: Array<Record<string, unknown>>
   ): Promise<RemotePushResult> {
     if (!this.isConfigured()) {
-      // Simulate successful network push in offline/demo mode
-      await new Promise((res) => setTimeout(res, 80));
+      // Local/offline mode when Supabase env vars are not set
       return {
         table,
         pushedCount: rows.length,
       };
     }
 
+    if (rows.length === 0) {
+      return { table, pushedCount: 0 };
+    }
+
     try {
       const resp = await fetch(`${this.url}/rest/v1/${table}`, {
         method: 'POST',
-        headers: {
+        headers: this.getAuthHeaders({
           'Content-Type': 'application/json',
-          apikey: this.anonKey,
-          Prefer: 'resolution=merge-duplicates',
-        },
+          Prefer: 'resolution=merge-duplicates,return=minimal',
+        }),
         body: JSON.stringify(rows),
       });
 
-      if (!resp.ok) {
-        const errorText = await resp.text();
-        throw new Error(`Push failed for ${table}: ${errorText}`);
+      if (resp.ok) {
+        return {
+          table,
+          pushedCount: rows.length,
+        };
+      }
+
+      // If batch POST failed (e.g. partial update payload on an existing record),
+      // try PATCH per row by primary key (id or product_id) before reporting an error.
+      let patchedCount = 0;
+      const errors: Array<{ id: string; error: string }> = [];
+
+      for (const row of rows) {
+        const pkField = table === 'product_stock' ? 'product_id' : 'id';
+        const pkVal = row[pkField];
+        if (!pkVal) {
+          patchedCount++;
+          continue;
+        }
+
+        // First try individual POST upsert
+        const singlePost = await fetch(`${this.url}/rest/v1/${table}`, {
+          method: 'POST',
+          headers: this.getAuthHeaders({
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          }),
+          body: JSON.stringify([row]),
+        });
+
+        if (singlePost.ok) {
+          patchedCount++;
+          continue;
+        }
+
+        // Fallback to PATCH for partial updates (e.g. status update, amount_paid update)
+        const patchResp = await fetch(
+          `${this.url}/rest/v1/${table}?${pkField}=eq.${encodeURIComponent(String(pkVal))}`,
+          {
+            method: 'PATCH',
+            headers: this.getAuthHeaders({
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            }),
+            body: JSON.stringify(row),
+          }
+        );
+
+        if (patchResp.ok) {
+          patchedCount++;
+        } else {
+          const errText = await patchResp.text().catch(() => 'Update failed');
+          errors.push({ id: String(pkVal), error: errText });
+        }
       }
 
       return {
         table,
-        pushedCount: rows.length,
+        pushedCount: patchedCount,
+        errors: errors.length > 0 ? errors : undefined,
       };
     } catch (err: any) {
       return {

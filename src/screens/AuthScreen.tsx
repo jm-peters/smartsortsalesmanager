@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Sparkles,
   Globe,
+  Fingerprint,
 } from 'lucide-react';
 import {
   db,
@@ -31,6 +32,21 @@ import {
 } from '../lib/db/local';
 import { toKES } from '../lib/money';
 import { verifyPin, hashPin } from '../lib/crypto';
+import {
+  MAX_BIOMETRIC_ATTEMPTS,
+  checkBiometricCapability,
+  isBiometricEnabled,
+  setBiometricEnabled,
+  hasAnsweredBiometricPrompt,
+  markBiometricPromptAnswered,
+  getFailedBiometricAttempts,
+  resetFailedBiometricAttempts,
+  getStoredAppPinHash,
+  saveEncryptedAppPin,
+  verifyFallbackAppPin,
+  scrubPlaintextPasswordsFromLocal,
+  unlockApp,
+} from '../lib/biometricLock';
 import { NumPad } from '../components/NumPad';
 import { Button } from '../components/Button';
 import { translations, type Language } from '../lib/i18n';
@@ -48,13 +64,20 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 }) => {
   const t = translations[language];
 
-  // Modes: 'pin' (fast device unlock) | 'login' (username/email + password) | 'signup' (new account) | 'forgot_password' (reset)
-  const [authMode, setAuthMode] = useState<'pin' | 'login' | 'signup' | 'forgot_password'>('login');
+  // Modes: 'biometric_lock' (Layer 1 offline fingerprint gate) | 'pin' (4-digit fallback PIN) | 'login' (username/email + password) | 'signup' (new account) | 'forgot_password' (reset)
+  const [authMode, setAuthMode] = useState<'biometric_lock' | 'pin' | 'login' | 'signup' | 'forgot_password'>('login');
   const [existingUser, setExistingUser] = useState<ShopUser | null>(null);
   const [existingShop, setExistingShop] = useState<Shop | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
+
+  // Layer 1 Offline Biometric App Lock States
+  const [isPromptingEnableBio, setIsPromptingEnableBio] = useState(false);
+  const [isUnlockingBio, setIsUnlockingBio] = useState(false);
+  const [bioFailedAttempts, setBioFailedAttempts] = useState(0);
+  const [bioErrorMsg, setBioErrorMsg] = useState('');
+  const [deviceSupportsBio, setDeviceSupportsBio] = useState(true);
 
   // Sign In Form States
   const [loginIdentifier, setLoginIdentifier] = useState('');
@@ -73,7 +96,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [forgotError, setForgotError] = useState('');
   const [forgotSuccessNotice, setForgotSuccessNotice] = useState('');
   const [recoverySessionToken, setRecoverySessionToken] = useState<string | null>(null);
-  const [showSupabaseSetupInfo, setShowSupabaseSetupInfo] = useState(false);
 
   // Fast Return PIN State
   const [pin, setPin] = useState('');
@@ -245,7 +267,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         email: inviteEmail,
         phone: '',
         role: 'attendant', // Attendant!
-        password_hash: attendantPassword,
         onboarding_step: 'complete',
         profile_completed_at: now,
         is_active: true,
@@ -324,7 +345,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
 
       setTempUserForPin({ user: newAttendantUser, shop });
-      setIsSettingPin(true);
+      setIsPromptingEnableBio(true);
       setIsAttendantInvite(false); // Done with invite step
     } catch (err: any) {
       setAttendantError(err?.message || 'Failed to complete registration. Please try again.');
@@ -486,7 +507,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             email: draft.email.trim().toLowerCase(),
             phone: '',
             role: 'owner',
-            password_hash: draft.password,
             onboarding_step: 'complete',
             profile_completed_at: now,
             is_active: true,
@@ -498,7 +518,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           await db.meta.put({ key: 'user_info', value: newUser });
 
           setTempUserForPin({ user: newUser, shop: newShop });
-          setIsSettingPin(true);
+          setIsPromptingEnableBio(true);
           localStorage.removeItem('smartsort_signup_draft');
           
           if (typeof window !== 'undefined') {
@@ -543,18 +563,44 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     handleMagicLinkRedirect();
   }, []);
 
-  // Check if existing user exists in local Dexie
+  // Check if existing user exists in local Dexie & apply Layer 1 Offline App Lock routing
   useEffect(() => {
     async function checkExisting() {
+      await scrubPlaintextPasswordsFromLocal();
+      const cap = await checkBiometricCapability();
+      setDeviceSupportsBio(cap.canCheckBiometrics && cap.isDeviceSupported);
+
       const u = await getShopUser();
       const s = await getShopMeta();
-      const isAuthDevice = typeof localStorage !== 'undefined' && localStorage.getItem('smartsort_authenticated') === 'true';
+      const storedPinHash = await getStoredAppPinHash();
+      const bioEnabled = isBiometricEnabled();
+      const isAuthDevice =
+        typeof localStorage !== 'undefined' &&
+        (localStorage.getItem('smartsort_authenticated') === 'true' || bioEnabled);
 
       if (u && s && isAuthDevice) {
-        setExistingUser(u);
+        const effectiveUser: ShopUser =
+          storedPinHash && !u.pin_hash ? { ...u, pin_hash: storedPinHash } : u;
+        setExistingUser(effectiveUser);
         setExistingShop(s);
-        // If user already has PIN on this device, default to PIN unlock for speed
-        if (u.pin_hash) {
+
+        const failedTries = getFailedBiometricAttempts();
+        setBioFailedAttempts(failedTries);
+
+        if (bioEnabled) {
+          // LAYER 1: Check biometric_enabled == true
+          if (failedTries >= MAX_BIOMETRIC_ATTEMPTS) {
+            // Security Rule: After 5 failed fingerprint tries, force PIN
+            setPinError(
+              language === 'en'
+                ? '5 failed fingerprint tries. Please enter your 4-digit fallback PIN.'
+                : 'Majaribio 5 ya alama ya vidole yameshindikana. Weka PIN yako ya tarakimu 4.'
+            );
+            setAuthMode('pin');
+          } else {
+            setAuthMode('biometric_lock');
+          }
+        } else if (effectiveUser.pin_hash || storedPinHash) {
           setAuthMode('pin');
         } else {
           setAuthMode('login');
@@ -567,60 +613,74 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     checkExisting();
   }, []);
 
-  // WebAuthn / Biometrics Passkey Simulation/Authentication
-  const handleBiometricLogin = async () => {
-    setLoginError('');
-
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('biometrics_enabled') !== 'true') {
-      const errMsg = language === 'en'
-        ? 'Biometric/Passkey sign-in is not enabled on this device. Please log in with your password and enable it in Settings first.'
-        : 'Kuingia kwa alama ya vidole hakujawezeshwa kwenye simu hii. Tafadhali ingia kwa nenosiri kwanza na uwezeshe kwenye Mipangilio.';
-      setLoginError(errMsg);
-      if (typeof window !== 'undefined') {
-        window.alert(errMsg);
-      }
-      return;
-    }
-    
-    if (typeof window !== 'undefined') {
-      const confirmBiometrics = window.confirm(
-        language === 'en'
-          ? 'Place your finger on your device fingerprint sensor or scan your face to authenticate securely with Passkeys.'
-          : 'Weka kidole chako kwenye kitambua alama za vidole au skana sura yako ili kuingia salama kwa kutumia Passkeys.'
-      );
-      
-      if (!confirmBiometrics) return;
-    }
+  // Layer 1 Offline Fingerprint Unlock Handler (100% offline, works in airplane mode, no Supabase)
+  const handleOfflineBiometricUnlock = async (simulateFailure = false) => {
+    if (isUnlockingBio) return;
+    setBioErrorMsg('');
+    setIsUnlockingBio(true);
 
     try {
-      setIsLoggingIn(true);
-      // Retrieve the current duka user
-      let user = await getShopUser();
-      let shop = await getShopMeta();
-      
-      if (!user || !shop) {
-        const seeded = await initializeDefaultDatabase();
-        user = seeded.user;
-        shop = seeded.shop;
-      }
-      
-      // Simulate cryptographic WebAuthn assertion delay
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      
-      if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
-        window.navigator.vibrate([20, 50, 20]);
-      }
-      
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('smartsort_authenticated', 'true');
-      }
+      const res = await unlockApp({ simulateFailure });
+      setBioFailedAttempts(res.attempts);
 
-      onAuthenticated(user, shop);
-    } catch (err) {
-      setLoginError(language === 'en' ? 'Biometric authentication failed.' : 'Kosa katika alama ya vidole.');
+      if (res.unlocked) {
+        let user = existingUser || (await getShopUser());
+        let shop = existingShop || (await getShopMeta());
+        if (!user || !shop) {
+          const seeded = await initializeDefaultDatabase();
+          user = seeded.user;
+          shop = seeded.shop;
+        }
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('smartsort_authenticated', 'true');
+        }
+        onAuthenticated(user, shop);
+      } else if (res.forcePin) {
+        // After 5 failed fingerprint tries -> Force 4-digit Fallback PIN
+        setPinError(
+          language === 'en'
+            ? '5 failed fingerprint tries. Please enter your 4-digit fallback PIN to unlock SSM.'
+            : 'Majaribio 5 ya alama ya vidole yameshindikana. Tafadhali tumia PIN yako ya tarakimu 4.'
+        );
+        setAuthMode('pin');
+      } else {
+        setBioErrorMsg(
+          language === 'en'
+            ? res.errorMessage || `Fingerprint not recognized (${res.attempts}/${MAX_BIOMETRIC_ATTEMPTS}). Try again or use fallback PIN.`
+            : `Alama ya kidole haijatambuliwa (${res.attempts}/${MAX_BIOMETRIC_ATTEMPTS}). Jaribu tena au tumia PIN.`
+        );
+      }
+    } catch {
+      setBioErrorMsg(
+        language === 'en'
+          ? 'Could not read fingerprint sensor. Please try again or use your 4-digit PIN.'
+          : 'Imeshindwa kusoma alama ya kidole. Jaribu tena au tumia PIN ya tarakimu 4.'
+      );
     } finally {
-      setIsLoggingIn(false);
+      setIsUnlockingBio(false);
     }
+  };
+
+  // Post-login helper: Ask "Enable fingerprint unlock for offline access?" on first login if not configured
+  const handleCompleteOnlineLogin = async (loggedInUser: ShopUser, loggedInShop: Shop) => {
+    await scrubPlaintextPasswordsFromLocal();
+    const storedPin = await getStoredAppPinHash();
+    const bioAlreadyEnabled = isBiometricEnabled();
+    const promptSeen = hasAnsweredBiometricPrompt();
+
+    if (!bioAlreadyEnabled && !promptSeen) {
+      setTempUserForPin({ user: loggedInUser, shop: loggedInShop });
+      setIsPromptingEnableBio(true);
+      return;
+    }
+
+    if (bioAlreadyEnabled && !storedPin && !loggedInUser.pin_hash) {
+      setTempUserForPin({ user: loggedInUser, shop: loggedInShop });
+      setIsSettingPin(true);
+      return;
+    }
+
+    onAuthenticated(loggedInUser, loggedInShop);
   };
 
   // Forgot Password: Step 1 - Send Recovery OTP / Link via Supabase Auth
@@ -765,13 +825,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         }
       }
 
-      // Update local Dexie database if matching user exists
-      const localUser = await getShopUser();
-      if (localUser && (localUser.email === cleanEmail || !localUser.email)) {
-        await saveShopUser({
-          password_hash: forgotNewPassword,
-        });
-      }
+      // Never save Supabase password locally per Layer 1 Security Rules
+      await scrubPlaintextPasswordsFromLocal();
 
       setForgotStep('success');
       setForgotSuccessNotice(
@@ -993,7 +1048,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 window.navigator.vibrate(20);
               }
 
-              onAuthenticated(updatedUser, shop);
+              await handleCompleteOnlineLogin(updatedUser, shop);
               return;
             }
           } catch (supabaseErr: any) {
@@ -1034,12 +1089,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
         const safeUser: ShopUser = {
           ...user,
+          password_hash: undefined,
           username: user.username || 'smartsort',
           email: user.email || 'smartsort@shop.com',
           onboarding_step: user.onboarding_step || 'complete',
           role: user.role || 'owner',
         };
-        onAuthenticated(safeUser, shop);
+        await handleCompleteOnlineLogin(safeUser, shop);
         return;
       }
 
@@ -1079,7 +1135,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         };
 
         await db.meta.put({ key: 'user_info', value: attendantUser });
-        onAuthenticated(attendantUser, shop);
+        await handleCompleteOnlineLogin(attendantUser, shop);
         return;
       }
 
@@ -1092,14 +1148,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
   };
 
-  // Fast Return PIN Verification (Doc 1 §5)
+  // Fallback 4-Digit App PIN Verification (100% offline via PBKDF2-SHA256 `app_pin_hash`)
   const handleVerifyPin = async (inputPin: string) => {
     if (!existingUser || inputPin.length < 4) return;
     setPinError('');
 
     try {
-      const isValid = await verifyPin(inputPin, existingUser.pin_hash || '', 'smartsort-kenya-duka');
+      const isValid =
+        (await verifyFallbackAppPin(inputPin)) ||
+        (await verifyPin(inputPin, existingUser.pin_hash || '', 'smartsort-kenya-duka'));
       if (isValid) {
+        resetFailedBiometricAttempts();
+        setBioFailedAttempts(0);
         if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
           window.navigator.vibrate([20, 40, 20]);
         }
@@ -1111,6 +1171,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         const shop = (await getShopMeta()) || (await initializeDefaultDatabase()).shop;
         const safeUser: ShopUser = {
           ...existingUser,
+          password_hash: undefined,
           username: existingUser.username || 'peterngecu',
           email: existingUser.email || 'peterngecu001@gmail.com',
           onboarding_step: existingUser.onboarding_step || 'contact',
@@ -1237,14 +1298,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       return;
     }
 
-    // Save signup draft to localStorage so that they can authenticate via Magic Link too!
+    // Save signup draft to localStorage (Never save plaintext Supabase password locally)
     if (typeof localStorage !== 'undefined') {
       const signupDraft = {
         fullName,
         shopName,
         username,
         email,
-        password
       };
       localStorage.setItem('smartsort_signup_draft', JSON.stringify(signupDraft));
     }
@@ -1518,7 +1578,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         email: email.trim().toLowerCase(),
         phone: cleanPhone,
         role: 'owner' as const,
-        password_hash: password,
         onboarding_step: 'complete' as const,
         profile_completed_at: now,
         is_active: true,
@@ -1534,7 +1593,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
 
       setTempUserForPin({ user: newUser, shop: newShop });
-      setIsSettingPin(true);
+      setIsPromptingEnableBio(true);
     } catch (err: any) {
       setOtpError(`Database Write Error: ${err.message}`);
     } finally {
@@ -1542,13 +1601,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
   };
 
-  // Finish Setting Device PIN
+  // Finish Setting Encrypted 4-Digit Fallback App PIN (`app_pin_hash`)
   const handleSaveDevicePin = async (enteredPin: string) => {
     if (enteredPin.length < 4 || !tempUserForPin) return;
 
-    const hashed = await hashPin(enteredPin, 'smartsort-kenya-duka');
+    const hashed = await saveEncryptedAppPin(enteredPin);
     const finalUser = await saveShopUser({
       pin_hash: hashed,
+      password_hash: undefined,
     });
 
     // Handle Supabase PIN syncing:
@@ -1668,7 +1728,89 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     );
   }
 
-  // Render Post-Signup Device PIN Setup Prompt
+  // Render Layer 1 First-Time Prompt: "Enable fingerprint unlock for offline access?"
+  if (isPromptingEnableBio && tempUserForPin) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-[420px] bg-white rounded-3xl p-6 shadow-xl border border-slate-200 space-y-5">
+          <div className="text-center space-y-2">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-600 text-white flex items-center justify-center mx-auto shadow-md">
+              <Fingerprint className="w-9 h-9" />
+            </div>
+            <h2 className="text-xl font-black text-slate-900 leading-tight">
+              {language === 'en'
+                ? 'Enable fingerprint unlock for offline access?'
+                : 'Wezesha kufungua kwa alama ya kidole bila mtandao?'}
+            </h2>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {language === 'en'
+                ? 'Unlock SmartSort Sales Manager instantly with your fingerprint — even in airplane mode with no internet or Supabase needed. Inside, you will see all your last synced customers, stock, and today’s orders.'
+                : 'Fungua SmartSort papo hapo kwa alama ya kidole hata ukiwa kwenye airplane mode bila mtandao. Ndani utaona wateja, bidhaa na mauzo yako yote.'}
+            </p>
+          </div>
+
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-xs text-slate-700">
+            <div className="font-bold text-slate-900">
+              {language === 'en' ? 'How Offline App Lock Works:' : 'Jinsi Kufuli la Bila Mtandao Linavyofanya Kazi:'}
+            </div>
+            <div className="text-slate-600 leading-relaxed">
+              {language === 'en'
+                ? '1. Local device fingerprint gate only (not a passkey, no internet needed).'
+                : '1. Alama ya kidole ya simu pekee (haihitaji mtandao).'}
+            </div>
+            <div className="text-slate-600 leading-relaxed">
+              {language === 'en'
+                ? '2. Next, you will set a 4-digit Fallback PIN in case your finger is wet or injured.'
+                : '2. Utaweka pia PIN ya tarakimu 4 ya dharura endapo kidole kina maji au kimeumia.'}
+            </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <Button
+              type="button"
+              variant="gradient"
+              size="hero"
+              fullWidth
+              onClick={() => {
+                setBiometricEnabled(true);
+                setIsPromptingEnableBio(false);
+                setNewDevicePin('');
+                setIsSettingPin(true);
+              }}
+            >
+              <Fingerprint className="w-5 h-5 mr-1.5" />
+              <span>
+                {language === 'en'
+                  ? 'Yes, Enable Fingerprint Unlock'
+                  : 'Ndiyo, Wezesha Alama ya Kidole'}
+              </span>
+            </Button>
+
+            <button
+              type="button"
+              onClick={async () => {
+                setBiometricEnabled(false);
+                markBiometricPromptAnswered();
+                setIsPromptingEnableBio(false);
+                const existingPin = await getStoredAppPinHash();
+                if (!existingPin && !tempUserForPin.user.pin_hash) {
+                  setNewDevicePin('');
+                  setIsSettingPin(true);
+                } else {
+                  onAuthenticated(tempUserForPin.user, tempUserForPin.shop);
+                }
+              }}
+              className="w-full min-h-[44px] py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+            >
+              {language === 'en' ? 'Use 4-Digit PIN Only' : 'Tumia PIN ya Tarakimu 4 Pekee'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Render Fallback 4-Digit App PIN Setup Prompt (`app_pin_hash`)
   if (isSettingPin) {
     return (
       <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4">
@@ -1678,12 +1820,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               <KeyRound className="w-7 h-7" />
             </div>
             <h2 className="text-xl font-black text-slate-900 leading-tight">
-              {language === 'en' ? 'Set 4-Digit Device PIN' : 'Weka PIN ya Kufungua Simu'}
+              {language === 'en' ? 'Set 4-Digit Fallback App PIN' : 'Weka PIN ya Tarakimu 4 ya Dharura'}
             </h2>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
               {language === 'en'
-                ? 'Used for instant, offline unlock every time you open the app on this phone.'
-                : 'Inatumika kufungua app haraka kila siku hata bila mtandao.'}
+                ? 'If your finger is wet or injured, you can always unlock SSM with this 4-digit PIN. Saved encrypted locally.'
+                : 'Ikiwa kidole chako kina maji au kimeumia, utatumia PIN hii ya tarakimu 4 kufungua SSM bila mtandao.'}
             </p>
           </div>
 
@@ -1693,7 +1835,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             onSubmit={() => handleSaveDevicePin(newDevicePin)}
             maxLength={4}
             isPin={true}
-            submitLabel={language === 'en' ? 'Start Selling' : 'Anza Kuuza'}
+            submitLabel={language === 'en' ? 'Save Fallback PIN & Open Shop' : 'Hifadhi PIN & Fungua Duka'}
           />
         </div>
       </div>
@@ -1728,7 +1870,120 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           </button>
         </div>
 
-        {/* MODE 1: Fast Return Device PIN Pad (Doc 1 §5) */}
+        {/* MODE 0: LAYER 1 - OFFLINE APP LOCK ("Unlock SSM" with Fingerprint) */}
+        {authMode === 'biometric_lock' && (
+          <div className="space-y-5 py-1">
+            <div className="text-center space-y-1.5">
+              <div className="text-xs font-semibold text-emerald-700">
+                {existingShop?.shop_name || 'SmartSort Duka'} · {existingUser?.name || 'Owner'}
+              </div>
+              <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                {language === 'en' ? 'Unlock SSM' : 'Fungua SSM'}
+              </h2>
+              <p className="text-xs text-slate-500">
+                {language === 'en'
+                  ? 'Unlock SmartSort to view orders, stock & customers'
+                  : 'Weka kidole kufungua mauzo, bidhaa na wateja bila mtandao'}
+              </p>
+              <div className="text-[11px] text-slate-400">
+                {!isOnline
+                  ? language === 'en'
+                    ? 'Airplane / Offline Mode · 100% Local Enclave'
+                    : 'Bila Mtandao · Hifadhi ya Ndani ya Simu'
+                  : language === 'en'
+                    ? 'Local App Lock · Works Offline & Online'
+                    : 'Kufuli la Simu · Inafanya Kazi Bila Mtandao'}
+              </div>
+            </div>
+
+            {bioErrorMsg && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold text-center">
+                {bioErrorMsg}
+              </div>
+            )}
+
+            {/* Primary Tactile Fingerprint Unlock Gate */}
+            <div className="flex flex-col items-center justify-center py-2 space-y-3">
+              <button
+                type="button"
+                disabled={isUnlockingBio || !deviceSupportsBio}
+                onClick={() => handleOfflineBiometricUnlock(false)}
+                className="w-24 h-24 rounded-full bg-emerald-50 hover:bg-emerald-100 active:scale-95 border-2 border-emerald-500 text-emerald-700 flex flex-col items-center justify-center shadow-lg transition cursor-pointer focus:outline-none focus:ring-4 focus:ring-emerald-500/20"
+                aria-label={language === 'en' ? 'Unlock SSM with Fingerprint' : 'Fungua SSM kwa Alama ya Kidole'}
+              >
+                <Fingerprint className={`w-12 h-12 ${isUnlockingBio ? 'animate-pulse text-emerald-600' : 'text-emerald-700'}`} />
+              </button>
+
+              <Button
+                type="button"
+                variant="gradient"
+                size="hero"
+                fullWidth
+                disabled={isUnlockingBio}
+                onClick={() => handleOfflineBiometricUnlock(false)}
+              >
+                <Fingerprint className="w-5 h-5 mr-1.5" />
+                <span>
+                  {isUnlockingBio
+                    ? language === 'en'
+                      ? 'Verifying Fingerprint...'
+                      : 'Inahakiki Kidole...'
+                    : language === 'en'
+                      ? 'Touch Sensor to Unlock SSM'
+                      : 'Gusa Kitambua Kidole Kufungua'}
+                </span>
+              </Button>
+
+              {bioFailedAttempts > 0 && (
+                <div className="text-xs font-semibold text-amber-700 tabular-nums">
+                  {language === 'en'
+                    ? `Failed attempts: ${bioFailedAttempts} / ${MAX_BIOMETRIC_ATTEMPTS} (PIN forced at ${MAX_BIOMETRIC_ATTEMPTS})`
+                    : `Majaribio yaliyoshindwa: ${bioFailedAttempts} / ${MAX_BIOMETRIC_ATTEMPTS}`}
+                </div>
+              )}
+            </div>
+
+            {/* Fallback PIN & Simulation Controls */}
+            <div className="pt-2 border-t border-slate-100 flex flex-col gap-2.5 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setPin('');
+                  setPinError('');
+                  setAuthMode('pin');
+                }}
+                className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <KeyRound className="w-4 h-4 text-emerald-700" />
+                <span>
+                  {language === 'en'
+                    ? 'Use 4-Digit Fallback PIN (Wet / Injured Finger)'
+                    : 'Tumia PIN ya Tarakimu 4 (Kidole Kilicholowa)'}
+                </span>
+              </button>
+
+              <div className="flex items-center justify-between text-[11px] text-slate-500 px-1 pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleOfflineBiometricUnlock(true)}
+                  className="hover:text-amber-700 underline cursor-pointer"
+                >
+                  {language === 'en' ? 'Simulate Failed Finger Scan' : 'Jaribu Kidole Kilichokosewa'}
+                </button>
+                <span>·</span>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('login')}
+                  className="hover:text-emerald-700 font-semibold underline cursor-pointer"
+                >
+                  {t.orUsePassword}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODE 1: Fallback 4-Digit App PIN Pad (Layer 1 Fallback & Fast Unlock) */}
         {authMode === 'pin' && existingUser && (
           <div className="space-y-4">
             <div className="text-center">
@@ -1758,6 +2013,22 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             />
 
             <div className="pt-2 flex flex-col gap-2 text-center">
+              {isBiometricEnabled() && bioFailedAttempts < MAX_BIOMETRIC_ATTEMPTS && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBioErrorMsg('');
+                    setAuthMode('biometric_lock');
+                  }}
+                  className="w-full min-h-[40px] py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <Fingerprint className="w-4 h-4 text-emerald-700" />
+                  <span>
+                    {language === 'en' ? 'Unlock SSM with Fingerprint' : 'Fungua SSM kwa Alama ya Kidole'}
+                  </span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => setAuthMode('login')}
@@ -1782,10 +2053,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               >
                 {language === 'en' ? 'Forgot Password or PIN? Reset Account' : 'Umesahau Nenosiri au PIN? Weka Upya'}
               </button>
-
-              <span className="text-[11px] text-slate-400">
-                Default PIN: <strong className="text-slate-600">1234</strong>
-              </span>
             </div>
           </div>
         )}
@@ -1876,15 +2143,22 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               {isLoggingIn ? t.loading : t.signInBtn}
             </Button>
 
-            {/* Passkey / Biometric Login Option */}
-            {typeof localStorage !== 'undefined' && localStorage.getItem('biometrics_enabled') === 'true' && (
+            {/* Layer 1 Offline Biometric Unlock Option if enabled */}
+            {isBiometricEnabled() && bioFailedAttempts < MAX_BIOMETRIC_ATTEMPTS && (
               <button
                 type="button"
-                onClick={handleBiometricLogin}
-                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer"
+                onClick={() => {
+                  setBioErrorMsg('');
+                  setAuthMode('biometric_lock');
+                }}
+                className="w-full min-h-[44px] py-2.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer"
               >
-                <Smartphone className="w-3.5 h-3.5 text-slate-600 animate-pulse" />
-                <span>{language === 'en' ? 'Sign in with Passkey / Biometrics' : 'Ingia kwa Alama ya Vidole (Biometrics)'}</span>
+                <Fingerprint className="w-4 h-4 text-emerald-700" />
+                <span>
+                  {language === 'en'
+                    ? 'Unlock SSM with Offline Fingerprint'
+                    : 'Fungua SSM kwa Alama ya Kidole (Bila Mtandao)'}
+                </span>
               </button>
             )}
 
@@ -2489,43 +2763,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 </Button>
               </div>
             )}
-
-            {/* Supabase Password Reset Integration Note & Setup Guidance */}
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => setShowSupabaseSetupInfo(!showSupabaseSetupInfo)}
-                className="w-full text-[11px] font-semibold text-slate-500 hover:text-emerald-700 flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-200 transition"
-              >
-                <span className="flex items-center gap-1.5">
-                  <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>{language === 'en' ? 'Supabase Password Reset Setup Notes' : 'Maelezo ya Supabase Reset'}</span>
-                </span>
-                <span className="text-xs font-mono">{showSupabaseSetupInfo ? '▲' : '▼'}</span>
-              </button>
-
-              {showSupabaseSetupInfo && (
-                <div className="mt-2 p-3 bg-slate-900 text-slate-200 rounded-xl text-[11px] space-y-2 border border-slate-800 animate-in fade-in duration-150">
-                  <div className="font-bold text-emerald-400">
-                    {language === 'en' ? 'Expected Supabase Configuration:' : 'Mipangilio Inayohitajika Supabase:'}
-                  </div>
-                  <ul className="list-disc pl-4 space-y-1 text-slate-300 text-[10.5px] leading-relaxed">
-                    <li>
-                      <strong>Auth Provider:</strong> Ensure <em>Email</em> auth is enabled in <em>Authentication → Providers → Email</em>.
-                    </li>
-                    <li>
-                      <strong>Redirect URLs:</strong> In <em>Authentication → URL Configuration</em>, add your domain origin (e.g. <code>https://your-app-domain.run.app</code>) to <strong>Redirect URLs</strong>.
-                    </li>
-                    <li>
-                      <strong>Reset Email Template:</strong> In <em>Authentication → Email Templates → Reset Password</em>, the redirect target should be <code>{'{{ .SiteURL }}'}</code>.
-                    </li>
-                    <li>
-                      <strong>Production SMTP:</strong> In production, configure custom SMTP in <em>Authentication → SMTP Settings</em> to prevent the default 3 emails/hour development rate limit.
-                    </li>
-                  </ul>
-                </div>
-              )}
-            </div>
 
             {/* Back to Login */}
             <div className="text-center pt-2 border-t border-slate-100">

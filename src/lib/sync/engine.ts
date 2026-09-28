@@ -10,22 +10,28 @@
  * 6. Reactive UI status indicators
  */
 
-import { db, setClockSkew, type OutboxEntry } from '../db/local';
+import {
+  db,
+  setClockSkew,
+  registerDirectSyncDispatcher,
+  type OutboxEntry,
+} from '../db/local';
 import type { RemoteAdapter } from '../remote/types';
 import { defaultRemoteAdapter } from '../remote/supabase';
 
 // Explicit push dependency order to respect foreign key constraints
 const PUSH_ORDER = [
   'shops',
+  'users',
   'products',
+  'customers',
+  'cash_sessions',
   'sales',
   'sale_items',
   'stock_movements',
-  'customers',
   'debts',
   'debt_payments',
   'expenses',
-  'cash_sessions',
   'subscription_payments',
 ];
 
@@ -43,7 +49,10 @@ type SyncListener = (status: SyncStatus) => void;
 class SyncEngine {
   private adapter: RemoteAdapter;
   private isSyncing = false;
+  private pendingReSync = false;
   private syncTimer: any = null;
+  private connectivityWatchTimer: any = null;
+  private reconnectStabilizeTimer: any = null;
   private listeners: SyncListener[] = [];
   private currentStatus: SyncStatus = {
     isSyncing: false,
@@ -56,6 +65,7 @@ class SyncEngine {
 
   constructor(adapter: RemoteAdapter = defaultRemoteAdapter) {
     this.adapter = adapter;
+    registerDirectSyncDispatcher((entries) => this.pushDirectOrQueue(entries));
     this.initNetworkListeners();
   }
 
@@ -81,61 +91,296 @@ class SyncEngine {
     this.listeners.forEach((fn) => fn(status));
   }
 
+  /**
+   * Reset backoff timers on all pending outbox entries when connectivity is restored
+   * so queued offline records are pushed immediately on reconnect.
+   */
+  private async resetOutboxBackoffOnReconnect(): Promise<void> {
+    try {
+      const nowIso = new Date().toISOString();
+      const waitingEntries = await db.outbox
+        .filter((e) => e.attempts > 0 && e.attempts < 10 && e.next_attempt_at > nowIso)
+        .toArray();
+
+      for (const entry of waitingEntries) {
+        if (entry.seq !== undefined) {
+          await db.outbox.update(entry.seq, {
+            next_attempt_at: nowIso,
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Handle transition to online state: update status, reset outbox backoff, and trigger immediate + stabilized sync
+   */
+  public async handleDeviceOnline(): Promise<void> {
+    this.currentStatus.isOnline = true;
+    this.emitStatus();
+
+    await this.resetOutboxBackoffOnReconnect();
+    await this.triggerSync();
+
+    // Follow-up sync pass 2.5s after interface comes up to handle DHCP/DNS warm-up delay
+    if (this.reconnectStabilizeTimer) {
+      clearTimeout(this.reconnectStabilizeTimer);
+    }
+    this.reconnectStabilizeTimer = setTimeout(() => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        void this.triggerSync();
+      }
+    }, 2500);
+  }
+
   private initNetworkListeners() {
     if (typeof window === 'undefined') return;
 
     window.addEventListener('online', () => {
-      this.currentStatus.isOnline = true;
-      this.emitStatus();
-      this.triggerSync();
+      void this.handleDeviceOnline();
     });
 
     window.addEventListener('offline', () => {
+      if (this.reconnectStabilizeTimer) {
+        clearTimeout(this.reconnectStabilizeTimer);
+        this.reconnectStabilizeTimer = null;
+      }
       this.currentStatus.isOnline = false;
       this.emitStatus();
     });
 
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && this.currentStatus.isOnline) {
-        this.triggerSync();
+    window.addEventListener('focus', () => {
+      const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : true;
+      if (onlineNow) {
+        if (!this.currentStatus.isOnline) {
+          void this.handleDeviceOnline();
+        } else {
+          void this.triggerSync();
+        }
       }
     });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : true;
+        if (onlineNow) {
+          if (!this.currentStatus.isOnline) {
+            void this.handleDeviceOnline();
+          } else {
+            void this.triggerSync();
+          }
+        }
+      }
+    });
+
+    // Listen to Network Information API changes (e.g. switching from offline/2G to Wi-Fi/4G)
+    const conn = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
+    if (conn && typeof conn.addEventListener === 'function') {
+      conn.addEventListener('change', () => {
+        this.startPeriodicSync();
+        const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : true;
+        if (onlineNow && conn. effectiveType !== 'offline') {
+          void this.handleDeviceOnline();
+        }
+      });
+    }
 
     // Request persistent storage to protect IndexedDB under device pressure (§7.8)
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
     }
 
-    // Initial check & periodic sync interval (90s, or 5 min on slow connections)
-    this.updateCounts();
+    // Initial check & periodic sync intervals
+    void this.updateCounts();
     this.startPeriodicSync();
+    this.startConnectivityWatchInterval();
+  }
+
+  /**
+   * Fast interval-based connectivity & outbox watcher (runs every 10s).
+   * Detects silent online transitions and flushes any pending outbox items automatically when online.
+   */
+  private startConnectivityWatchInterval() {
+    if (this.connectivityWatchTimer) clearInterval(this.connectivityWatchTimer);
+
+    this.connectivityWatchTimer = setInterval(async () => {
+      if (typeof navigator === 'undefined') return;
+      const onlineNow = navigator.onLine;
+      const wasOnline = this.currentStatus.isOnline;
+
+      if (onlineNow !== wasOnline) {
+        this.currentStatus.isOnline = onlineNow;
+        this.emitStatus();
+
+        if (onlineNow && !wasOnline) {
+          await this.handleDeviceOnline();
+          return;
+        }
+      }
+
+      if (onlineNow && !this.isSyncing) {
+        await this.updateCounts();
+        if (this.currentStatus.unpushedCount > 0) {
+          await this.resetOutboxBackoffOnReconnect();
+          void this.triggerSync();
+        }
+      }
+    }, 10_000);
   }
 
   private startPeriodicSync() {
     if (this.syncTimer) clearInterval(this.syncTimer);
 
-    let interval = 90_000;
+    let interval = 30_000;
     const conn = (navigator as any).connection;
     if (conn && (conn.saveData || conn.effectiveType === '2g')) {
-      interval = 300_000; // 5 min interval to conserve user data
+      interval = 180_000; // 3 min interval on slow/data-saver connections
     }
 
     this.syncTimer = setInterval(() => {
-      if (this.currentStatus.isOnline && !this.isSyncing) {
-        this.triggerSync();
+      const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
+      this.currentStatus.isOnline = onlineNow;
+      if (onlineNow && !this.isSyncing) {
+        void this.triggerSync();
       }
     }, interval);
   }
 
   public async updateCounts() {
     try {
-      const total = await db.outbox.count();
-      const dead = await db.outbox.where('attempts').aboveOrEqual(10).count();
-      this.currentStatus.unpushedCount = total;
-      this.currentStatus.deadLetterCount = dead;
+      // Automatically isolate and archive any dead letters (>= 10 attempts)
+      // so they never block, slow down, or affect active sync operations.
+      const deadLetters = await db.outbox.where('attempts').aboveOrEqual(10).toArray();
+      if (deadLetters.length > 0) {
+        const existingArchive = await db.meta.get('dead_letters_archive');
+        const prevList = Array.isArray(existingArchive?.value) ? existingArchive.value : [];
+        await db.meta.put({
+          key: 'dead_letters_archive',
+          value: [...prevList.slice(-100), ...deadLetters],
+        });
+        const deadSeqs = deadLetters
+          .map((e) => e.seq)
+          .filter((s): s is number => s !== undefined);
+        if (deadSeqs.length > 0) {
+          await db.outbox.bulkDelete(deadSeqs);
+        }
+      }
+
+      const activePending = await db.outbox.count();
+      this.currentStatus.unpushedCount = activePending;
+      this.currentStatus.deadLetterCount = 0;
       this.emitStatus();
     } catch {
       // ignore
+    }
+  }
+
+  /**
+   * Direct Online Write-Through Sync:
+   * - When the user is ONLINE: sends changes directly and immediately to Supabase
+   *   in foreign-key dependency order WITHOUT queueing in `db.outbox`.
+   * - When the user is OFFLINE (or if a direct online request drops mid-flight):
+   *   queues only the unsent items into `db.outbox` for automatic background retry.
+   */
+  public async pushDirectOrQueue(input: OutboxEntry | OutboxEntry[]): Promise<void> {
+    const entries = Array.isArray(input) ? input : [input];
+    if (entries.length === 0) return;
+
+    const isOnlineNow =
+      typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
+    this.currentStatus.isOnline = isOnlineNow;
+
+    // OFFLINE MODE: Queue into local outbox immediately
+    if (!isOnlineNow) {
+      await db.outbox.bulkAdd(
+        entries.map((e) => ({
+          ...e,
+          attempts: e.attempts ?? 0,
+          next_attempt_at: e.next_attempt_at || new Date().toISOString(),
+        }))
+      );
+      await this.updateCounts();
+      return;
+    }
+
+    // ONLINE MODE: Send directly to Supabase without queueing!
+    // Group entries by table in PUSH_ORDER so foreign keys are respected
+    const grouped = new Map<string, OutboxEntry[]>();
+    for (const entry of entries) {
+      const list = grouped.get(entry.table) || [];
+      list.push(entry);
+      grouped.set(entry.table, list);
+    }
+
+    const orderedTables = [
+      ...PUSH_ORDER.filter((t) => grouped.has(t)),
+      ...Array.from(grouped.keys()).filter((t) => !PUSH_ORDER.includes(t)),
+    ];
+
+    const fallbackQueue: OutboxEntry[] = [];
+
+    for (const table of orderedTables) {
+      const tableEntries = grouped.get(table) || [];
+      if (tableEntries.length === 0) continue;
+
+      const payloads = tableEntries.map((e) => this.sanitizePayload(table, e.payload));
+
+      try {
+        const result = await this.adapter.pushBatch(table, payloads);
+        if (result.pushedCount > 0 && (!result.errors || result.errors.length === 0)) {
+          // Direct online push succeeded immediately — no queueing needed!
+          continue;
+        }
+
+        // If batch had partial errors, try each entry individually right now
+        for (const singleEntry of tableEntries) {
+          try {
+            const singlePayload = this.sanitizePayload(table, singleEntry.payload);
+            const singleRes = await this.adapter.pushBatch(table, [singlePayload]);
+            if (singleRes.pushedCount === 0 || (singleRes.errors && singleRes.errors.length > 0)) {
+              fallbackQueue.push({
+                ...singleEntry,
+                attempts: 1,
+                next_attempt_at: new Date(Date.now() + 5000).toISOString(),
+                last_error: singleRes.errors?.[0]?.error || 'Direct sync retry queued',
+              });
+            }
+          } catch (singleErr: any) {
+            fallbackQueue.push({
+              ...singleEntry,
+              attempts: 1,
+              next_attempt_at: new Date(Date.now() + 5000).toISOString(),
+              last_error: singleErr?.message || 'Direct sync retry queued',
+            });
+          }
+        }
+      } catch (err: any) {
+        // Network dropped mid-request -> queue for retry
+        for (const singleEntry of tableEntries) {
+          fallbackQueue.push({
+            ...singleEntry,
+            attempts: 1,
+            next_attempt_at: new Date(Date.now() + 5000).toISOString(),
+            last_error: err?.message || 'Network interrupted during direct sync',
+          });
+        }
+      }
+    }
+
+    if (fallbackQueue.length > 0) {
+      await db.outbox.bulkAdd(fallbackQueue);
+    } else {
+      this.currentStatus.lastSyncedAt = new Date();
+      this.currentStatus.lastError = null;
+    }
+
+    await this.updateCounts();
+
+    // If there are any older offline items still waiting in outbox, flush them in the background
+    if (this.currentStatus.unpushedCount > 0 && !this.isSyncing) {
+      this.triggerSync().catch(() => {});
     }
   }
 
@@ -163,7 +408,21 @@ class SyncEngine {
   }
 
   public async triggerSync(): Promise<void> {
-    if (this.isSyncing) return;
+    const isOnlineNow =
+      typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
+    this.currentStatus.isOnline = isOnlineNow;
+
+    if (!isOnlineNow) {
+      await this.updateCounts();
+      this.emitStatus();
+      return;
+    }
+
+    if (this.isSyncing) {
+      this.pendingReSync = true;
+      return;
+    }
+
     this.isSyncing = true;
     this.currentStatus.isSyncing = true;
     this.emitStatus();
@@ -187,6 +446,11 @@ class SyncEngine {
       this.currentStatus.isSyncing = false;
       await this.updateCounts();
       this.emitStatus();
+
+      if (this.pendingReSync && (typeof navigator === 'undefined' || navigator.onLine)) {
+        this.pendingReSync = false;
+        void this.triggerSync();
+      }
     }
   }
 

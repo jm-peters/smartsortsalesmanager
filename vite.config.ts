@@ -7,6 +7,17 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig(() => {
   return {
     plugins: [
+      {
+        name: 'safe-vite-client-ws-send',
+        transform(code, id) {
+          if (id.includes('vite/dist/client/client.mjs')) {
+            return code.replace(
+              'ws.send(JSON.stringify(data));',
+              'ws?.send?.(JSON.stringify(data));'
+            );
+          }
+        },
+      },
       react(),
       tailwindcss(),
       VitePWA({
@@ -95,6 +106,7 @@ export default defineConfig(() => {
       },
     },
     server: {
+      forwardConsole: false,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

@@ -94,8 +94,29 @@ export default function App() {
 
     init();
 
-    // Start background sync listeners
-    syncEngine.triggerSync();
+    // Trigger initial sync when online
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      void syncEngine.triggerSync();
+    }
+
+    // Event-listener & interval-based connectivity system that triggers syncEngine.triggerSync()
+    // automatically whenever the browser detects that the device is back online.
+    const handleOnlineReconnect = () => {
+      void syncEngine.handleDeviceOnline();
+    };
+
+    window.addEventListener('online', handleOnlineReconnect);
+
+    const syncInterval = window.setInterval(() => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        void syncEngine.triggerSync();
+      }
+    }, 15_000);
+
+    return () => {
+      window.removeEventListener('online', handleOnlineReconnect);
+      window.clearInterval(syncInterval);
+    };
   }, []);
 
   // Update shop info

@@ -13,6 +13,10 @@ import {
   db,
   serverNow,
   recordDebtPayment,
+  getShopMeta,
+  getOrCreateDeviceId,
+  syncWriteThrough,
+  type OutboxEntry,
   type Debt,
   type Customer,
   type UserRole,
@@ -214,10 +218,19 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     const cleanPhone = newPhone.trim();
     if (!cleanPhone) return;
     const now = serverNow();
+    const entries: OutboxEntry[] = [];
 
     await db.debts.update(debt.id, {
       customer_phone: cleanPhone,
       updated_at: now,
+    });
+    entries.push({
+      id: debt.id,
+      table: 'debts',
+      op: 'update',
+      payload: { id: debt.id, customer_phone: cleanPhone, updated_at: now },
+      attempts: 0,
+      next_attempt_at: now,
     });
 
     if (debt.customer_id) {
@@ -225,7 +238,17 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
         phone: cleanPhone,
         updated_at: now,
       });
+      entries.push({
+        id: debt.customer_id,
+        table: 'customers',
+        op: 'update',
+        payload: { id: debt.customer_id, phone: cleanPhone, updated_at: now },
+        attempts: 0,
+        next_attempt_at: now,
+      });
     }
+
+    void syncWriteThrough(entries);
   };
 
   const handleOpenPayment = (debt: Debt) => {
@@ -283,6 +306,9 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
 
     let finalCustId = customerId;
     const now = serverNow();
+    const shop = await getShopMeta();
+    const deviceId = await getOrCreateDeviceId();
+    const syncEntries: OutboxEntry[] = [];
 
     if (!finalCustId) {
       if (!custName.trim()) {
@@ -294,17 +320,17 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       finalCustId = crypto.randomUUID();
       const newC: Customer = {
         id: finalCustId,
-        shop_id: 'shop-active',
+        shop_id: shop.shop_id,
         name: custName.trim(),
         phone: custPhone.trim() || null,
         notes: null,
-        credit_limit: toKES(3000),
+        credit_limit: shop.default_credit_limit ?? toKES(3000),
         created_at: now,
         updated_at: now,
         deleted_at: null,
       };
       await db.customers.put(newC);
-      await db.outbox.add({
+      syncEntries.push({
         id: finalCustId,
         table: 'customers',
         op: 'insert',
@@ -322,7 +348,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     const debtId = crypto.randomUUID();
     const newDebt: Debt = {
       id: debtId,
-      shop_id: 'shop-active',
+      shop_id: shop.shop_id,
       customer_id: finalCustId,
       customer_name: selectedCust.name,
       customer_phone: selectedCust.phone,
@@ -333,20 +359,20 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       sale_id: null,
       created_at: now,
       updated_at: now,
-      device_id: 'device-active',
+      device_id: deviceId,
     };
 
-    await db.transaction('rw', [db.debts, db.outbox], async () => {
-      await db.debts.put(newDebt);
-      await db.outbox.add({
-        id: debtId,
-        table: 'debts',
-        op: 'insert',
-        payload: newDebt as unknown as Record<string, unknown>,
-        attempts: 0,
-        next_attempt_at: now,
-      });
+    await db.debts.put(newDebt);
+    syncEntries.push({
+      id: debtId,
+      table: 'debts',
+      op: 'insert',
+      payload: newDebt as unknown as Record<string, unknown>,
+      attempts: 0,
+      next_attempt_at: now,
     });
+
+    void syncWriteThrough(syncEntries);
 
     setIsAddDeniOpen(false);
     setAmountStr('');
@@ -365,7 +391,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       credit_limit: limit,
       updated_at: now,
     });
-    await db.outbox.add({
+    void syncWriteThrough({
       id: editingCustomer.id,
       table: 'customers',
       op: 'update',

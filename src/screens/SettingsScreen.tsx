@@ -21,6 +21,7 @@ import {
   Phone,
   Trash2,
   AlertTriangle,
+  Fingerprint,
 } from 'lucide-react';
 import {
   db,
@@ -34,6 +35,12 @@ import { Button } from '../components/Button';
 import { Sheet } from '../components/Sheet';
 import { NumPad } from '../components/NumPad';
 import { hashPin } from '../lib/crypto';
+import {
+  isBiometricEnabled,
+  setBiometricEnabled,
+  saveEncryptedAppPin,
+  getStoredAppPinHash,
+} from '../lib/biometricLock';
 import { translations, type Language } from '../lib/i18n';
 
 interface SettingsScreenProps {
@@ -181,9 +188,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     }
     loadUser();
 
-    if (typeof localStorage !== 'undefined') {
-      setBiometricsEnabled(localStorage.getItem('biometrics_enabled') === 'true');
-    }
+    setBiometricsEnabled(isBiometricEnabled());
 
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
       navigator.storage.estimate().then((est) => {
@@ -458,10 +463,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       const user = await getShopUser();
       if (!user) return;
 
-      const hash = await hashPin(newPin);
+      const hash = await saveEncryptedAppPin(newPin);
       await saveShopUser({
         ...user,
         pin_hash: hash,
+        password_hash: undefined,
       });
 
       setIsPinModalOpen(false);
@@ -470,7 +476,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       setPinStep('enter');
 
       if (typeof window !== 'undefined') {
-        window.alert(isEn ? 'Unlock PIN successfully updated!' : 'PIN ya kufungua simu imebadilishwa kikamilifu!');
+        window.alert(
+          isEn
+            ? '4-digit Fallback App PIN encrypted & saved locally!'
+            : 'PIN ya tarakimu 4 ya dharura imehifadhiwa salama kwenye simu!'
+        );
       }
     } catch {
       if (typeof window !== 'undefined') {
@@ -781,13 +791,21 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
           <div className="divide-y divide-slate-100 text-xs">
             <div className="py-2 flex justify-between">
+              <span className="text-slate-500">{isEn ? 'Sync mode:' : 'Aina ya ulandanishi:'}</span>
+              <span className="font-bold text-emerald-700">
+                {syncStatus.isOnline
+                  ? (isEn ? 'Direct Instant Cloud + Local' : 'Moja kwa Moja Mtandaoni + Simu')
+                  : (isEn ? 'Offline Queue Mode' : 'Foleni ya Bila Mtandao')}
+              </span>
+            </div>
+            <div className="py-2 flex justify-between">
               <span className="text-slate-500">{isEn ? 'Device offline storage:' : 'Miamala kwenye simu:'}</span>
               <span className="font-bold text-slate-800 tabular-nums">
                 {storageEstimate ? `${storageEstimate.usedMB} MB` : (isEn ? 'Loading...' : 'Inapakia...')}
               </span>
             </div>
             <div className="py-2 flex justify-between">
-              <span className="text-slate-500">{isEn ? 'Pending outbox sync:' : 'Miamala inayongoja kurushwa:'}</span>
+              <span className="text-slate-500">{isEn ? 'Offline queued items:' : 'Miamala inayongoja mtandao:'}</span>
               <span
                 className={`font-black tabular-nums ${
                   syncStatus.unpushedCount > 0 ? 'text-amber-600' : 'text-emerald-700'
@@ -797,8 +815,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </span>
             </div>
             <div className="py-2 flex justify-between">
-              <span className="text-slate-500">{isEn ? 'Dead letters (failed):' : 'Miamala iliyokwama (Dead letters):'}</span>
-              <span className={`font-bold tabular-nums ${syncStatus.deadLetterCount > 0 ? 'text-rose-600' : 'text-slate-700'}`}>
+              <span className="text-slate-500">{isEn ? 'Dead letters (isolated):' : 'Miamala iliyotengwa (Dead letters):'}</span>
+              <span className="font-bold tabular-nums text-slate-700">
                 {syncStatus.deadLetterCount}
               </span>
             </div>
@@ -1012,7 +1030,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             >
               {isResettingPassword
                 ? (isEn ? 'Sending Reset Instructions...' : 'Inatuma Maelekezo...')
-                : (isEn ? 'Send Password Reset Link via Email (Supabase)' : 'Tuma Kiungo cha Nenosiri kwa Barua Pepe')}
+                : (isEn ? 'Send Password Reset Link via Email' : 'Tuma Kiungo cha Nenosiri kwa Barua Pepe')}
             </Button>
 
             <Button
@@ -1027,23 +1045,27 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               }}
               className="text-xs border-slate-300"
             >
-              {isEn ? 'Change Quick Unlock PIN' : 'Badilisha PIN ya Kufungua Simu'}
+              {isEn ? 'Change 4-Digit Fallback App PIN' : 'Badilisha PIN ya Tarakimu 4 ya Dharura'}
             </Button>
           </div>
 
-          {/* Biometrics Toggle Button */}
+          {/* Layer 1 Offline Fingerprint App Lock Toggle Button */}
           <button
             type="button"
-            onClick={() => {
-              const current = localStorage.getItem('biometrics_enabled') === 'true';
-              localStorage.setItem('biometrics_enabled', (!current).toString());
-              setBiometricsEnabled(!current);
-              if (typeof window !== 'undefined') {
-                window.alert(
-                  !current
-                    ? (isEn ? 'Biometrics & Passkey sign-in enabled on this device!' : 'Kuingia kwa alama ya vidole / Passkey kumewezeshwa kwenye simu hii!')
-                    : (isEn ? 'Biometrics login disabled.' : 'Kuingia kwa alama ya vidole kumezimwa.')
-                );
+            onClick={async () => {
+              const nextState = !biometricsEnabled;
+              setBiometricEnabled(nextState);
+              setBiometricsEnabled(nextState);
+
+              if (nextState) {
+                const existingPin = await getStoredAppPinHash();
+                if (!existingPin) {
+                  setNewPin('');
+                  setConfirmPin('');
+                  setPinStep('enter');
+                  setIsPinModalOpen(true);
+                  return;
+                }
               }
             }}
             className={`w-full p-2.5 border rounded-xl text-xs font-bold flex items-center justify-between transition cursor-pointer ${
@@ -1053,8 +1075,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             }`}
           >
             <div className="flex items-center gap-1.5">
-              <Smartphone className={`w-4 h-4 ${biometricsEnabled ? 'text-emerald-600' : 'text-slate-400'}`} />
-              <span>{isEn ? 'Enable Biometric / Passkey Login' : 'Wezesha Kuingia kwa Fingerprint'}</span>
+              <Fingerprint className={`w-4 h-4 ${biometricsEnabled ? 'text-emerald-600' : 'text-slate-400'}`} />
+              <span>{isEn ? 'Offline Fingerprint App Lock (Layer 1)' : 'Kufuli la Alama ya Kidole Bila Mtandao'}</span>
             </div>
             <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded-full ${
               biometricsEnabled ? 'bg-emerald-200 text-emerald-800' : 'bg-slate-200 text-slate-600'

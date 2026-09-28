@@ -331,6 +331,31 @@ export class SmartSortDB extends Dexie {
 
 export const db = new SmartSortDB();
 
+// Direct Online Write-Through Sync Dispatcher
+type DirectSyncDispatcher = (entries: OutboxEntry | OutboxEntry[]) => Promise<void>;
+let directSyncDispatcher: DirectSyncDispatcher | null = null;
+
+export function registerDirectSyncDispatcher(dispatcher: DirectSyncDispatcher) {
+  directSyncDispatcher = dispatcher;
+}
+
+/**
+ * Sends changes directly to Supabase immediately when online (without queueing in outbox),
+ * and only queues to `db.outbox` when offline or if the direct network call fails.
+ */
+export async function syncWriteThrough(input: OutboxEntry | OutboxEntry[]): Promise<void> {
+  const entries = Array.isArray(input) ? input : [input];
+  if (entries.length === 0) return;
+
+  if (directSyncDispatcher) {
+    await directSyncDispatcher(entries);
+    return;
+  }
+
+  // Fallback if sync engine has not finished initializing yet
+  await db.outbox.bulkAdd(entries);
+}
+
 // Clock skew compensation
 let localClockSkewMs = 0;
 
@@ -513,8 +538,8 @@ export async function recordSubscriptionPayment(payload: {
     plan_acknowledged: true,
   });
 
-  // Queue to outbox for remote sync to Supabase subscriptions table
-  await db.outbox.add({
+  // Send directly to Supabase if online (or queue in outbox if offline)
+  void syncWriteThrough({
     id: paymentId,
     table: 'subscription_payments',
     op: 'insert',
@@ -552,7 +577,7 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
     }
   }
 
-  // Queue to outbox for remote sync to Supabase shops table
+  // Sync directly to Supabase shops table if online, or queue to outbox if offline
   try {
     const payload = {
       id: updated.shop_id,
@@ -580,7 +605,7 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
       updated_at: now,
     };
 
-    await db.outbox.add({
+    void syncWriteThrough({
       id: updated.shop_id,
       table: 'shops',
       op: 'update',
@@ -588,24 +613,8 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
       attempts: 0,
       next_attempt_at: now,
     });
-
-    // Directly push to Supabase REST if online
-    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
-    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
-    if (url && anonKey) {
-      fetch(`${url}/rest/v1/shops`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: anonKey,
-          Authorization: `Bearer ${anonKey}`,
-          Prefer: 'resolution=merge-duplicates',
-        },
-        body: JSON.stringify([payload]),
-      }).catch((err) => console.warn('Direct Supabase shop sync failed (will retry via outbox):', err));
-    }
   } catch (e) {
-    console.warn('Could not queue shop update to outbox:', e);
+    console.warn('Could not sync shop update:', e);
   }
 
   return updated;
@@ -719,7 +728,9 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
     { name: 'Kiberiti (Matches Box)', buy: 4, sell: 5, emoji: '🔥', unit: 'pcs', low: 20, pack: 100 },
   ];
 
-  await db.transaction('rw', [db.products, db.stock_movements, db.product_stock, db.outbox], async () => {
+  const demoOutboxEntries: OutboxEntry[] = [];
+
+  await db.transaction('rw', [db.products, db.stock_movements, db.product_stock], async () => {
     for (let i = 0; i < demoCatalog.length; i++) {
       const item = demoCatalog[i] as any;
       const prodId = `prod-kenya-${i + 1}`;
@@ -773,8 +784,7 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
         updated_at: now,
       });
 
-      // Queue outbox for product and stock movement
-      await db.outbox.add({
+      demoOutboxEntries.push({
         id: prodId,
         table: 'products',
         op: 'insert',
@@ -782,7 +792,7 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
         attempts: 0,
         next_attempt_at: now,
       });
-      await db.outbox.add({
+      demoOutboxEntries.push({
         id: moveId,
         table: 'stock_movements',
         op: 'insert',
@@ -792,6 +802,8 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
       });
     }
   });
+
+  void syncWriteThrough(demoOutboxEntries);
 }
 
 /**
@@ -852,7 +864,7 @@ export async function getActiveCashSession(): Promise<CashSession> {
   };
 
   await db.cash_sessions.put(newSession);
-  await db.outbox.add({
+  void syncWriteThrough({
     id: newSessionId,
     table: 'cash_sessions',
     op: 'insert',
@@ -1227,13 +1239,11 @@ export async function recordSale(saleData: {
           });
         }
       }
-
-      // 5. Enqueue Outbox Entries
-      for (const entry of outboxEntries) {
-        await db.outbox.add(entry);
-      }
     }
   );
+
+  // 5. Direct online write-through to Supabase (or queue in outbox if offline)
+  void syncWriteThrough(outboxEntries);
 
   return { sale: saleHeader, items: saleItems };
 }
@@ -1251,10 +1261,11 @@ export async function voidSale(saleId: string, reason = 'Customer mis-tap / 30s 
   const now = serverNow();
 
   const items = await db.sale_items.where('sale_id').equals(saleId).toArray();
+  const voidSyncEntries: OutboxEntry[] = [];
 
   await db.transaction(
     'rw',
-    [db.sales, db.stock_movements, db.product_stock, db.debts, db.outbox, db.audit_log],
+    [db.sales, db.stock_movements, db.product_stock, db.debts, db.audit_log],
     async () => {
       // 1. Mark sale void
       await db.sales.update(saleId, {
@@ -1293,7 +1304,7 @@ export async function voidSale(saleId: string, reason = 'Customer mis-tap / 30s 
           updated_at: now,
         });
 
-        await db.outbox.add({
+        voidSyncEntries.push({
           id: revMovementId,
           table: 'stock_movements',
           op: 'insert',
@@ -1309,7 +1320,7 @@ export async function voidSale(saleId: string, reason = 'Customer mis-tap / 30s 
           status: 'written_off',
           updated_at: now,
         });
-        await db.outbox.add({
+        voidSyncEntries.push({
           id: sale.debt_id,
           table: 'debts',
           op: 'update',
@@ -1332,8 +1343,8 @@ export async function voidSale(saleId: string, reason = 'Customer mis-tap / 30s 
         created_at: now,
       });
 
-      // 5. Outbox for sale update
-      await db.outbox.add({
+      // 5. Sale update entry
+      voidSyncEntries.push({
         id: saleId,
         table: 'sales',
         op: 'update',
@@ -1350,6 +1361,8 @@ export async function voidSale(saleId: string, reason = 'Customer mis-tap / 30s 
       });
     }
   );
+
+  void syncWriteThrough(voidSyncEntries);
 
   return true;
 }
@@ -1387,16 +1400,14 @@ export async function recordExpense(data: {
     cash_session_id: activeSession.id,
   };
 
-  await db.transaction('rw', [db.expenses, db.outbox], async () => {
-    await db.expenses.put(expense);
-    await db.outbox.add({
-      id,
-      table: 'expenses',
-      op: 'insert',
-      payload: expense as unknown as Record<string, unknown>,
-      attempts: 0,
-      next_attempt_at: now,
-    });
+  await db.expenses.put(expense);
+  void syncWriteThrough({
+    id,
+    table: 'expenses',
+    op: 'insert',
+    payload: expense as unknown as Record<string, unknown>,
+    attempts: 0,
+    next_attempt_at: now,
   });
 
   return expense;
@@ -1435,24 +1446,25 @@ export async function recordDebtPayment(data: {
     cash_session_id: activeSession.id,
   };
 
-  await db.transaction('rw', [db.debts, db.debt_payments, db.outbox], async () => {
+  await db.transaction('rw', [db.debts, db.debt_payments], async () => {
     await db.debt_payments.put(payment);
     await db.debts.update(data.debtId, {
       amount_paid: newAmountPaid,
       status: newStatus,
       updated_at: now,
     });
+  });
 
-    await db.outbox.add({
+  void syncWriteThrough([
+    {
       id: paymentId,
       table: 'debt_payments',
       op: 'insert',
       payload: payment as unknown as Record<string, unknown>,
       attempts: 0,
       next_attempt_at: now,
-    });
-
-    await db.outbox.add({
+    },
+    {
       id: data.debtId,
       table: 'debts',
       op: 'update',
@@ -1464,8 +1476,8 @@ export async function recordDebtPayment(data: {
       },
       attempts: 0,
       next_attempt_at: now,
-    });
-  });
+    },
+  ]);
 
   return { payment, newBalance, status: newStatus };
 }
@@ -1486,7 +1498,9 @@ export async function recordBatchPurchase(
   const deviceId = await getOrCreateDeviceId();
   const now = serverNow();
 
-  await db.transaction('rw', [db.products, db.stock_movements, db.product_stock, db.outbox], async () => {
+  const batchSyncEntries: OutboxEntry[] = [];
+
+  await db.transaction('rw', [db.products, db.stock_movements, db.product_stock], async () => {
     for (const item of purchases) {
       if (item.qty <= 0) continue;
 
@@ -1523,7 +1537,7 @@ export async function recordBatchPurchase(
         if (item.updateSellingPrice) updates.selling_price = item.updateSellingPrice;
         await db.products.update(item.productId, updates);
 
-        await db.outbox.add({
+        batchSyncEntries.push({
           id: item.productId,
           table: 'products',
           op: 'update',
@@ -1533,7 +1547,7 @@ export async function recordBatchPurchase(
         });
       }
 
-      await db.outbox.add({
+      batchSyncEntries.push({
         id: movementId,
         table: 'stock_movements',
         op: 'insert',
@@ -1543,6 +1557,8 @@ export async function recordBatchPurchase(
       });
     }
   });
+
+  void syncWriteThrough(batchSyncEntries);
 }
 
 /**
@@ -1591,10 +1607,11 @@ export async function recordSingleProductRestock(payload: {
   };
 
   let newQty = 0;
+  const restockSyncEntries: OutboxEntry[] = [];
 
   await db.transaction(
     'rw',
-    [db.products, db.stock_movements, db.product_stock, db.expenses, db.outbox],
+    [db.products, db.stock_movements, db.product_stock, db.expenses],
     async () => {
       await db.stock_movements.put(movement);
 
@@ -1618,7 +1635,7 @@ export async function recordSingleProductRestock(payload: {
 
       if (Object.keys(productUpdates).length > 1) {
         await db.products.update(payload.productId, productUpdates);
-        await db.outbox.add({
+        restockSyncEntries.push({
           id: payload.productId,
           table: 'products',
           op: 'update',
@@ -1653,7 +1670,7 @@ export async function recordSingleProductRestock(payload: {
           cash_session_id: activeSession.id,
         };
         await db.expenses.put(expense);
-        await db.outbox.add({
+        restockSyncEntries.push({
           id: expenseId,
           table: 'expenses',
           op: 'insert',
@@ -1663,7 +1680,7 @@ export async function recordSingleProductRestock(payload: {
         });
       }
 
-      await db.outbox.add({
+      restockSyncEntries.push({
         id: movementId,
         table: 'stock_movements',
         op: 'insert',
@@ -1673,6 +1690,8 @@ export async function recordSingleProductRestock(payload: {
       });
     }
   );
+
+  void syncWriteThrough(restockSyncEntries);
 
   return { newStock: newQty };
 }
@@ -1897,7 +1916,7 @@ export async function saveShopUser(user: Partial<ShopUser>): Promise<ShopUser> {
       updated_at: now,
     };
 
-    await db.outbox.add({
+    void syncWriteThrough({
       id: updated.id,
       table: 'users',
       op: 'update',
@@ -1905,23 +1924,8 @@ export async function saveShopUser(user: Partial<ShopUser>): Promise<ShopUser> {
       attempts: 0,
       next_attempt_at: now,
     });
-
-    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
-    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
-    if (url && anonKey) {
-      fetch(`${url}/rest/v1/users`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: anonKey,
-          Authorization: `Bearer ${anonKey}`,
-          Prefer: 'resolution=merge-duplicates',
-        },
-        body: JSON.stringify([userPayload]),
-      }).catch((err) => console.warn('Direct Supabase user sync failed:', err));
-    }
   } catch (e) {
-    console.warn('Could not queue user update to outbox:', e);
+    console.warn('Could not sync user update:', e);
   }
 
   return updated;
@@ -1990,7 +1994,6 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
     phone: '',
     role: 'owner',
     pin_hash: adminPinHash,
-    password_hash: 'admin2540',
     onboarding_step: 'complete',
     profile_completed_at: now,
     is_active: true,
@@ -1999,6 +2002,9 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
   };
   await db.meta.put({ key: 'shop_info', value: shop });
   await db.meta.put({ key: 'user_info', value: user });
+  if (typeof localStorage !== 'undefined' && !localStorage.getItem('app_pin_hash')) {
+    localStorage.setItem('app_pin_hash', adminPinHash);
+  }
 
   // New shops start with zero products so owners can create their own catalog
   // Sample catalog can be manually loaded from Settings anytime

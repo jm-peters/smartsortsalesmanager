@@ -22,6 +22,10 @@ import {
   serverNow,
   generateSearchKey,
   seedKenyanCatalog,
+  getShopMeta,
+  getOrCreateDeviceId,
+  syncWriteThrough,
+  type OutboxEntry,
   type Product,
   type StockMovement,
   type UserRole,
@@ -270,6 +274,8 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     }
 
     const now = serverNow();
+    const shop = await getShopMeta();
+    const deviceId = await getOrCreateDeviceId();
     const productId = editingProduct ? editingProduct.id : crypto.randomUUID();
     const buyingPrice = buyingPriceStr.trim() !== '' && !isNaN(Number(buyingPriceStr)) && Number(buyingPriceStr) > 0 ? toKES(Number(buyingPriceStr)) : null;
     const sellingPrice = toKES(sellingNum);
@@ -286,9 +292,11 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           .sort((a, b) => a.qty - b.qty)
       : undefined;
 
+    const syncEntries: OutboxEntry[] = [];
+
     if (editingProduct) {
       // Update existing
-      await db.transaction('rw', [db.products, db.stock_movements, db.product_stock, db.outbox], async () => {
+      await db.transaction('rw', [db.products, db.stock_movements, db.product_stock], async () => {
         const updateData: Partial<Product> = {
           name: name.trim(),
           search_key: generateSearchKey(name),
@@ -315,7 +323,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
             const movementId = crypto.randomUUID();
             const movement: StockMovement = {
               id: movementId,
-              shop_id: 'shop-active',
+              shop_id: shop.shop_id,
               product_id: productId,
               delta,
               reason: 'adjustment',
@@ -324,19 +332,19 @@ export const StockScreen: React.FC<StockScreenProps> = ({
               unit_cost: buyingPrice ?? toKES(0),
               note: `Stock adjustment: ${currentQty} -> ${newStockQty} ${unit}`,
               created_at: now,
-              device_id: 'device-active',
-              created_by: 'user-active',
+              device_id: deviceId,
+              created_by: shop.user_id,
             };
 
             await db.stock_movements.put(movement);
             await db.product_stock.put({
               product_id: productId,
-              shop_id: 'shop-active',
+              shop_id: shop.shop_id,
               qty: newStockQty,
               updated_at: now,
             });
 
-            await db.outbox.add({
+            syncEntries.push({
               id: movementId,
               table: 'stock_movements',
               op: 'insert',
@@ -347,11 +355,11 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           }
         }
 
-        await db.outbox.add({
+        syncEntries.push({
           id: productId,
           table: 'products',
           op: 'update',
-          payload: { id: productId, ...updateData },
+          payload: { id: productId, shop_id: shop.shop_id, ...updateData },
           attempts: 0,
           next_attempt_at: now,
         });
@@ -360,7 +368,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
       // Create new product
       const newProduct: Product = {
         id: productId,
-        shop_id: 'shop-active',
+        shop_id: shop.shop_id,
         name: name.trim(),
         search_key: generateSearchKey(name),
         buying_price: buyingPrice,
@@ -375,14 +383,14 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         created_at: now,
         updated_at: now,
         deleted_at: null,
-        device_id: 'device-active',
+        device_id: deviceId,
       };
 
       const initialQty = Number(initialQtyStr) || 0;
       const movementId = crypto.randomUUID();
       const movement: StockMovement = {
         id: movementId,
-        shop_id: 'shop-active',
+        shop_id: shop.shop_id,
         product_id: productId,
         delta: initialQty,
         reason: 'opening',
@@ -391,24 +399,24 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         unit_cost: buyingPrice ?? toKES(0),
         note: 'Mwanzo wa bidhaa',
         created_at: now,
-        device_id: 'device-active',
-        created_by: 'user-active',
+        device_id: deviceId,
+        created_by: shop.user_id,
       };
 
       await db.transaction(
         'rw',
-        [db.products, db.stock_movements, db.product_stock, db.outbox],
+        [db.products, db.stock_movements, db.product_stock],
         async () => {
           await db.products.put(newProduct);
           await db.stock_movements.put(movement);
           await db.product_stock.put({
             product_id: productId,
-            shop_id: 'shop-active',
+            shop_id: shop.shop_id,
             qty: initialQty,
             updated_at: now,
           });
 
-          await db.outbox.add({
+          syncEntries.push({
             id: productId,
             table: 'products',
             op: 'insert',
@@ -416,7 +424,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
             attempts: 0,
             next_attempt_at: now,
           });
-          await db.outbox.add({
+          syncEntries.push({
             id: movementId,
             table: 'stock_movements',
             op: 'insert',
@@ -428,6 +436,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
       );
     }
 
+    void syncWriteThrough(syncEntries);
     setIsProductModalOpen(false);
   };
 
@@ -437,8 +446,11 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     if (lines.length === 0) return;
 
     const now = serverNow();
+    const shop = await getShopMeta();
+    const deviceId = await getOrCreateDeviceId();
+    const bulkSyncEntries: OutboxEntry[] = [];
 
-    await db.transaction('rw', [db.products, db.stock_movements, db.product_stock, db.outbox], async () => {
+    await db.transaction('rw', [db.products, db.stock_movements, db.product_stock], async () => {
       for (const line of lines) {
         // format: Name, buying (optional), selling, qty OR Name, selling, qty
         const parts = line.split(',').map((p) => p.trim());
@@ -471,7 +483,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         const id = crypto.randomUUID();
         const p: Product = {
           id,
-          shop_id: 'shop-active',
+          shop_id: shop.shop_id,
           name: prodName,
           search_key: generateSearchKey(prodName),
           buying_price: buyPrice,
@@ -484,13 +496,13 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           created_at: now,
           updated_at: now,
           deleted_at: null,
-          device_id: 'device-active',
+          device_id: deviceId,
         };
 
         const mId = crypto.randomUUID();
         const m: StockMovement = {
           id: mId,
-          shop_id: 'shop-active',
+          shop_id: shop.shop_id,
           product_id: id,
           delta: qty,
           reason: 'opening',
@@ -499,20 +511,20 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           unit_cost: buyPrice ?? toKES(0),
           note: 'Bulk paste import',
           created_at: now,
-          device_id: 'device-active',
-          created_by: 'user-active',
+          device_id: deviceId,
+          created_by: shop.user_id,
         };
 
         await db.products.put(p);
         await db.stock_movements.put(m);
         await db.product_stock.put({
           product_id: id,
-          shop_id: 'shop-active',
+          shop_id: shop.shop_id,
           qty,
           updated_at: now,
         });
 
-        await db.outbox.add({
+        bulkSyncEntries.push({
           id,
           table: 'products',
           op: 'insert',
@@ -520,8 +532,18 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           attempts: 0,
           next_attempt_at: now,
         });
+        bulkSyncEntries.push({
+          id: mId,
+          table: 'stock_movements',
+          op: 'insert',
+          payload: m as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        });
       }
     });
+
+    void syncWriteThrough(bulkSyncEntries);
 
     setIsBulkAddModalOpen(false);
     setBulkText('');
@@ -1173,11 +1195,13 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                       if (isNaN(counted) || counted === current) return;
                       const delta = counted - current;
                       const now = serverNow();
+                      const shop = await getShopMeta();
+                      const deviceId = await getOrCreateDeviceId();
                       const mId = crypto.randomUUID();
 
-                      await db.stock_movements.put({
+                      const movement: StockMovement = {
                         id: mId,
-                        shop_id: 'shop-active',
+                        shop_id: shop.shop_id,
                         product_id: p.id,
                         delta,
                         reason: 'adjustment',
@@ -1186,14 +1210,25 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                         unit_cost: p.buying_price,
                         note: 'Stock-take count',
                         created_at: now,
-                        device_id: 'device-active',
-                        created_by: 'user-active',
-                      });
+                        device_id: deviceId,
+                        created_by: shop.user_id,
+                      };
+
+                      await db.stock_movements.put(movement);
                       await db.product_stock.put({
                         product_id: p.id,
-                        shop_id: 'shop-active',
+                        shop_id: shop.shop_id,
                         qty: counted,
                         updated_at: now,
+                      });
+
+                      void syncWriteThrough({
+                        id: mId,
+                        table: 'stock_movements',
+                        op: 'insert',
+                        payload: movement as unknown as Record<string, unknown>,
+                        attempts: 0,
+                        next_attempt_at: now,
                       });
                     }}
                     className="w-16 h-9 px-2 text-center font-bold text-sm border border-slate-300 rounded-lg"

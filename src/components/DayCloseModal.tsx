@@ -8,6 +8,7 @@ import {
   db,
   serverNow,
   calculateSessionExpectedCash,
+  syncWriteThrough,
   type CashSession,
   type UserRole,
 } from '../lib/db/local';
@@ -95,29 +96,29 @@ export const DayCloseModal: React.FC<DayCloseModalProps> = ({
     const now = serverNow();
 
     try {
+      const updateData = {
+        status: 'closed' as const,
+        closed_at: now,
+        closed_by: session.shop_user_id,
+        expected_cash: metrics.expectedCash,
+        counted_cash: countedCash,
+        cash_variance: cashVariance,
+        expected_mpesa: metrics.mpesaSales,
+        counted_mpesa: countedMpesa,
+        mpesa_variance: mpesaVariance,
+        total_sales: metrics.totalSales,
+        total_profit: metrics.totalProfit,
+        total_expenses: metrics.totalExpenses,
+        deni_issued: metrics.deniIssued,
+        deni_collected: metrics.cashDeniPayments,
+        transaction_count: metrics.transactionCount,
+        note: note.trim() || null,
+      };
+
       await db.transaction(
         'rw',
-        [db.cash_sessions, db.outbox, db.audit_log],
+        [db.cash_sessions, db.audit_log],
         async () => {
-          const updateData = {
-            status: 'closed' as const,
-            closed_at: now,
-            closed_by: session.shop_user_id,
-            expected_cash: metrics.expectedCash,
-            counted_cash: countedCash,
-            cash_variance: cashVariance,
-            expected_mpesa: metrics.mpesaSales,
-            counted_mpesa: countedMpesa,
-            mpesa_variance: mpesaVariance,
-            total_sales: metrics.totalSales,
-            total_profit: metrics.totalProfit,
-            total_expenses: metrics.totalExpenses,
-            deni_issued: metrics.deniIssued,
-            deni_collected: metrics.cashDeniPayments,
-            transaction_count: metrics.transactionCount,
-            note: note.trim() || null,
-          };
-
           await db.cash_sessions.update(session.id, updateData);
 
           await db.audit_log.put({
@@ -131,17 +132,17 @@ export const DayCloseModal: React.FC<DayCloseModalProps> = ({
             after: updateData,
             created_at: now,
           });
-
-          await db.outbox.add({
-            id: session.id,
-            table: 'cash_sessions',
-            op: 'update',
-            payload: { id: session.id, ...updateData },
-            attempts: 0,
-            next_attempt_at: now,
-          });
         }
       );
+
+      void syncWriteThrough({
+        id: session.id,
+        table: 'cash_sessions',
+        op: 'update',
+        payload: { id: session.id, shop_id: session.shop_id, ...updateData },
+        attempts: 0,
+        next_attempt_at: now,
+      });
 
       onSessionClosed();
       onClose();
