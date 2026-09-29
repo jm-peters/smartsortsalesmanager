@@ -399,6 +399,9 @@ export interface ShopMeta {
   owner_name: string;
   phone: string;
   till_number: string;
+  paybill_number?: string;
+  account_number?: string;
+  include_credit_in_gross_sales?: boolean;
   role: UserRole;
   user_id: string;
   avatar_emoji?: string;
@@ -457,7 +460,10 @@ export async function getShopMeta(): Promise<ShopMeta> {
     shop_name: 'Smartsort Shop',
     owner_name: 'Smartsort User',
     phone: '',
-    till_number: '542190',
+    till_number: '247247',
+    paybill_number: '247247',
+    account_number: '253499',
+    include_credit_in_gross_sales: true,
     role: 'owner',
     user_id: 'user-owner-001',
     avatar_emoji: '🏪',
@@ -1483,6 +1489,107 @@ export async function recordDebtPayment(data: {
 }
 
 /**
+ * Record Customer Debt Payment (Lump-sum applied across customer's chronological open debts)
+ */
+export async function recordCustomerDebtPayment(data: {
+  customerId: string;
+  amount: KES;
+  method: 'cash' | 'mpesa';
+}): Promise<{ totalPaid: KES; remainingBalance: KES }> {
+  const shop = await getShopMeta();
+  const deviceId = await getOrCreateDeviceId();
+  const now = serverNow();
+  const activeSession = await getActiveCashSession();
+
+  // Find all open debts for this customer, sorted oldest first
+  const openDebts = await db.debts
+    .where('customer_id')
+    .equals(data.customerId)
+    .filter((d) => d.status !== 'paid' && d.status !== 'written_off')
+    .sortBy('created_at');
+
+  let amountLeftToApply = data.amount;
+  const syncEntries: OutboxEntry[] = [];
+  let totalPaid = toKES(0);
+
+  await db.transaction('rw', [db.debts, db.debt_payments], async () => {
+    for (const debt of openDebts) {
+      if (amountLeftToApply <= 0) break;
+
+      const debtRemaining = subKES(debt.principal, debt.amount_paid);
+      const paymentForThisDebt = Math.min(amountLeftToApply, debtRemaining);
+
+      const newAmountPaid = addKES(debt.amount_paid, paymentForThisDebt);
+      const newBalance = subKES(debt.principal, newAmountPaid);
+      const newStatus = newBalance <= 0 ? 'paid' : 'partial';
+
+      const paymentId = crypto.randomUUID();
+      const payment: DebtPayment = {
+        id: paymentId,
+        shop_id: shop.shop_id,
+        debt_id: debt.id,
+        amount: paymentForThisDebt,
+        method: data.method,
+        created_at: now,
+        device_id: deviceId,
+        created_by: shop.user_id,
+        cash_session_id: activeSession.id,
+      };
+
+      await db.debt_payments.put(payment);
+      await db.debts.update(debt.id, {
+        amount_paid: newAmountPaid,
+        status: newStatus,
+        updated_at: now,
+      });
+
+      syncEntries.push(
+        {
+          id: paymentId,
+          table: 'debt_payments',
+          op: 'insert',
+          payload: payment as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        },
+        {
+          id: debt.id,
+          table: 'debts',
+          op: 'update',
+          payload: {
+            id: debt.id,
+            amount_paid: newAmountPaid,
+            status: newStatus,
+            updated_at: now,
+          },
+          attempts: 0,
+          next_attempt_at: now,
+        }
+      );
+
+      amountLeftToApply -= paymentForThisDebt;
+      totalPaid = addKES(totalPaid, paymentForThisDebt);
+    }
+  });
+
+  void syncWriteThrough(syncEntries);
+
+  // Calculate new total remaining balance for customer
+  const updatedDebts = await db.debts
+    .where('customer_id')
+    .equals(data.customerId)
+    .filter((d) => d.status !== 'paid' && d.status !== 'written_off')
+    .toArray();
+
+  const remainingBalance = updatedDebts.reduce(
+    (sum, d) => addKES(sum, subKES(d.principal, d.amount_paid)),
+    toKES(0)
+  );
+
+  return { totalPaid, remainingBalance };
+}
+
+/**
  * Batch Purchase / Restock Flow (Feature 6)
  */
 export async function recordBatchPurchase(
@@ -1958,7 +2065,10 @@ export async function initializeDefaultDatabase(): Promise<{ shop: Shop; user: S
     shop_name: 'Smartsort solutions',
     owner_name: 'Peter Ngecu',
     phone: '',
-    till_number: '6997912',
+    till_number: '247247',
+    paybill_number: '247247',
+    account_number: '253499',
+    include_credit_in_gross_sales: true,
     role: 'owner',
     user_id: userId,
     avatar_emoji: '🏪',

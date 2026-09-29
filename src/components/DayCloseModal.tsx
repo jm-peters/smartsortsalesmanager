@@ -270,15 +270,37 @@ export const DayCloseModal: React.FC<DayCloseModalProps> = ({
             {/* Sales & Financials Card */}
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 divide-y divide-slate-200 text-sm">
               <div className="py-2 flex justify-between">
-                <span className="text-slate-600">{isEn ? "Today's Sales:" : 'Mauzo ya Leo:'}</span>
-                <span className="font-bold text-slate-900 tabular-nums">
+                <span className="text-slate-600 font-semibold">{isEn ? "Gross Sales (Total):" : 'Jumla ya Mauzo (Gross):'}</span>
+                <span className="font-black text-slate-900 tabular-nums">
                   {formatKES(metrics.totalSales)}
                 </span>
               </div>
 
+              {/* Payment Methods Breakdown */}
+              <div className="py-2 space-y-1 text-xs">
+                <div className="flex justify-between text-slate-500">
+                  <span>• {isEn ? 'Cash Sales:' : 'Mauzo ya Taslimu (Cash):'}</span>
+                  <span className="font-bold text-slate-800 tabular-nums">{formatKES(metrics.cashSales)}</span>
+                </div>
+                <div className="flex justify-between text-slate-500">
+                  <span>• {isEn ? 'M-Pesa / Till:' : 'M-Pesa / Till:'}</span>
+                  <span className="font-bold text-emerald-700 tabular-nums">{formatKES(metrics.mpesaSales)}</span>
+                </div>
+                <div className="flex justify-between text-amber-700">
+                  <span>• {isEn ? 'Credit Issued (Deni Leo):' : 'Deni Lililotolewa Leo:'}</span>
+                  <span className="font-bold tabular-nums">{formatKES(metrics.deniIssued)}</span>
+                </div>
+                {metrics.cashDeniPayments > 0 && (
+                  <div className="flex justify-between text-emerald-800">
+                    <span>• {isEn ? 'Deni Paid in Cash Today:' : 'Deni Lililolipwa Taslimu:'}</span>
+                    <span className="font-bold tabular-nums">+{formatKES(metrics.cashDeniPayments)}</span>
+                  </div>
+                )}
+              </div>
+
               {isOwner && (
                 <div className="py-2 flex justify-between">
-                  <span className="text-slate-600">{isEn ? 'Shop Profit:' : 'Faida ya Duka:'}</span>
+                  <span className="text-slate-600">{isEn ? 'Shop Gross Profit:' : 'Faida ya Duka:'}</span>
                   <span className="font-bold text-blue-700 tabular-nums">
                     {formatKES(metrics.totalProfit)}
                   </span>

@@ -39,7 +39,9 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
   onSubscriptionUpdated,
 }) => {
   const isEn = language === 'en';
-  const tillNumber = '6997912'; // Official SmartSort Buy Goods Till Number
+  const paybillNumber = '247247'; // Equity Till Paybill
+  const accountNumber = '253499'; // Equity Till Account Number
+  const tillNumber = '247247'; // Paybill 247247 Acc 253499
 
   const registeredPhone = (shop.phone || shop.alt_phone || '').trim();
 
@@ -434,37 +436,46 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
                 </div>
               )}
 
-              {/* TAB 2: Buy Goods Till (Manual) */}
+              {/* TAB 2: Equity Till (Manual) */}
               {activeTab === 'till' && (
                 <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                  {/* Till Number Card */}
-                  <div className="p-3 bg-white border border-emerald-300 rounded-xl flex items-center justify-between">
-                    <div>
-                      <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-                        {isEn ? 'Buy Goods Till Number' : 'Nambari ya Till (Buy Goods)'}
+                  {/* Till Details Card */}
+                  <div className="p-3 bg-white border border-emerald-300 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] font-black text-emerald-800 uppercase tracking-wider">
+                        {isEn ? 'Official Equity Till (Paybill)' : 'Equity Till Rasmi (Paybill)'}
                       </div>
-                      <div className="text-xl font-black text-slate-900 tracking-wider">
-                        {tillNumber}
+                      <button
+                        type="button"
+                        onClick={handleCopyTill}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-1 active:scale-95 transition"
+                      >
+                        {copiedTill ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedTill ? (isEn ? 'Copied!' : 'Imenakiliwa!') : (isEn ? 'Copy' : 'Nakili')}</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-center">
+                      <div className="p-2 bg-slate-50 rounded-lg border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase block">Paybill</span>
+                        <span className="text-lg font-black text-slate-900 tracking-wider">247247</span>
+                      </div>
+                      <div className="p-2 bg-slate-50 rounded-lg border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase block">Account No</span>
+                        <span className="text-lg font-black text-emerald-700 tracking-wider">253499</span>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleCopyTill}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition"
-                    >
-                      {copiedTill ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copiedTill ? (isEn ? 'Copied!' : 'Imenakiliwa!') : (isEn ? 'Copy Till' : 'Nakili Till')}</span>
-                    </button>
                   </div>
 
                   {/* Step-by-step instructions */}
                   <div className="text-xs text-slate-600 space-y-1 bg-white/70 p-2.5 rounded-xl border border-slate-200">
                     <div className="font-bold text-slate-800 mb-1">
-                      {isEn ? 'How to Pay via M-Pesa:' : 'Jinsi ya Kulipa:'}
+                      {isEn ? 'How to Pay via M-Pesa / Equity:' : 'Jinsi ya Kulipa:'}
                     </div>
                     <ol className="list-decimal list-inside space-y-0.5 text-[11.5px] leading-relaxed">
-                      <li>Go to <strong>M-Pesa</strong> &gt; <strong>Lipa na M-Pesa</strong> &gt; <strong>Buy Goods</strong></li>
-                      <li>Enter Till: <strong className="text-emerald-800">{tillNumber}</strong> (SmartSort Technologies)</li>
+                      <li>Go to <strong>M-Pesa</strong> &gt; <strong>Lipa na M-Pesa</strong> &gt; <strong>Paybill</strong></li>
+                      <li>Business No (Paybill): <strong className="text-emerald-800">247247</strong></li>
+                      <li>Account No: <strong className="text-emerald-800">253499</strong></li>
                       <li>Enter Amount: <strong className="text-emerald-800">KES {currentPlan.kes}</strong></li>
                       <li>Enter M-Pesa PIN & confirm payment</li>
                     </ol>

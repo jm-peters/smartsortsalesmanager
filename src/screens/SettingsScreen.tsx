@@ -648,20 +648,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
           <div>
             <label className="block text-[11px] font-bold text-slate-600 mb-1">
-              {isEn ? 'M-Pesa Till / Paybill Number:' : 'Nambari ya Till ya M-Pesa (Buy Goods):'}
+              {isEn ? 'Your Shop M-Pesa Till / Paybill Number:' : 'Nambari ya Till / Paybill ya Duka Lako:'}
             </label>
             <input
               type="text"
               value={till}
               onChange={(e) => isOwner && setTill(e.target.value)}
               readOnly={!isOwner}
-              placeholder={isEn ? 'Example: 542190' : 'Mfano: 542190'}
+              placeholder={isEn ? 'e.g. 542190 or 123456' : 'mfano 542190 au 123456'}
               className={`w-full h-11 px-3 text-sm font-semibold border rounded-xl focus:outline-none ${
                 isOwner
                   ? 'bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500'
                   : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
               }`}
             />
+            <p className="text-[10px] text-slate-500 mt-1 font-medium">
+              {isEn
+                ? 'Customers will send their payments to this Till number when paying for goods.'
+                : 'Wateja watatuma malipo yao kwenye nambari hii ya Till wanaponunua bidhaa.'}
+            </p>
           </div>
 
           {isOwner ? (

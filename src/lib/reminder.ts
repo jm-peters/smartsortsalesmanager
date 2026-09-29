@@ -59,7 +59,7 @@ export function generateDebtorReminderText(options: DebtorReminderOptions): stri
     if (tillNumber && tillNumber.trim()) {
       lines.push('');
       lines.push('💳 *HOW TO PAY VIA M-PESA:*');
-      lines.push(`• *Till Number (Buy Goods):* *${tillNumber.trim()}*`);
+      lines.push(`• *Till / Paybill Number:* *${tillNumber.trim()}*`);
       lines.push(`• *Account Name:* ${name}`);
     }
 
@@ -87,7 +87,7 @@ export function generateDebtorReminderText(options: DebtorReminderOptions): stri
     if (tillNumber && tillNumber.trim()) {
       lines.push('');
       lines.push('💳 *JINSI YA KULIPA KWA M-PESA:*');
-      lines.push(`• *Till Number (Buy Goods):* *${tillNumber.trim()}*`);
+      lines.push(`• *Nambari ya Till / Paybill:* *${tillNumber.trim()}*`);
       lines.push(`• *Jina la Akaunti:* ${name}`);
     }
 

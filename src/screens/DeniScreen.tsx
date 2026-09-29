@@ -8,11 +8,23 @@ import {
   Clock,
   Phone,
   ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  CreditCard,
+  User,
+  Calendar,
+  AlertTriangle,
+  Receipt,
+  Layers,
+  ArrowDownCircle,
+  History,
+  ShieldAlert,
 } from 'lucide-react';
 import {
   db,
   serverNow,
   recordDebtPayment,
+  recordCustomerDebtPayment,
   getShopMeta,
   getOrCreateDeviceId,
   syncWriteThrough,
@@ -20,6 +32,8 @@ import {
   type Debt,
   type Customer,
   type UserRole,
+  type SaleHeader,
+  type SaleItem,
 } from '../lib/db/local';
 import {
   toKES,
@@ -48,10 +62,21 @@ interface DeniScreenProps {
   language?: Language;
 }
 
+interface CustomerGroupedDebts {
+  customer: Customer | { id: string; name: string; phone?: string | null; credit_limit?: KES | null };
+  debts: Debt[];
+  totalOutstanding: KES;
+  totalOriginal: KES;
+  totalPaid: KES;
+  oldestDays: number;
+  isDefaulted: boolean;
+  hasOverdue: boolean;
+}
+
 export const DeniScreen: React.FC<DeniScreenProps> = ({
   userRole,
   shopName,
-  tillNumber,
+  tillNumber = '247247 (Acc: 253499)',
   language = 'en',
 }) => {
   const isOwner = userRole === 'owner';
@@ -60,21 +85,30 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'overdue' | 'defaulted'>('open');
+  const [viewMode, setViewMode] = useState<'customer_ledger' | 'single_entries'>('customer_ledger');
+  const [expandedCustomerIds, setExpandedCustomerIds] = useState<Set<string>>(new Set());
 
-  // Record Payment Sheet
-  const [paymentDebt, setPaymentDebt] = useState<Debt | null>(null);
+  // Record Payment Sheet (Single debt or Customer Account)
+  const [paymentTarget, setPaymentTarget] = useState<{
+    type: 'customer' | 'debt';
+    customerId?: string;
+    customerName: string;
+    debtId?: string;
+    outstanding: KES;
+  } | null>(null);
   const [paymentAmountStr, setPaymentAmountStr] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'mpesa'>('cash');
   const [savingPayment, setSavingPayment] = useState(false);
 
-  // Add Standalone Debt Sheet
+  // Add Standalone / Additional Credit Sheet
   const [isAddDeniOpen, setIsAddDeniOpen] = useState(false);
   const [customerId, setCustomerId] = useState('');
   const [custName, setCustName] = useState('');
   const [custPhone, setCustPhone] = useState('');
   const [amountStr, setAmountStr] = useState('');
+  const [noteStr, setNoteStr] = useState('');
 
-  // Customer Credit Limit Setting Sheet (Feature 3)
+  // Customer Credit Limit Setting Sheet
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [creditLimitStr, setCreditLimitStr] = useState('');
 
@@ -82,7 +116,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
   const [reminderDebt, setReminderDebt] = useState<Debt | null>(null);
   const [reminderToast, setReminderToast] = useState<{ message: string; debt: Debt } | null>(null);
 
-  // Defaulted Debt Helpline Claim Modal State (Feature: 2+ Months 70% Compensation)
+  // Defaulted Debt Helpline Claim Modal State (2+ Months 70% Compensation)
   const [claimDebt, setClaimDebt] = useState<Debt | null>(null);
 
   // Live queries
@@ -96,35 +130,30 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     []
   ) || [];
 
+  const allSales = useLiveQuery(() => db.sales.toArray(), []) || [];
+  const allSaleItems = useLiveQuery(() => db.sale_items.toArray(), []) || [];
+
   const customerMap = useMemo(() => {
     const map = new Map<string, Customer>();
     customers.forEach((c) => map.set(c.id, c));
     return map;
   }, [customers]);
 
-  // Aggregate customer debt totals
-  const customerDebtTotals = useMemo(() => {
-    const map = new Map<string, { totalOutstanding: KES; oldestDays: number }>();
-    const now = Date.now();
-
-    debts.forEach((d) => {
-      if (d.status === 'paid' || d.status === 'written_off') return;
-      const balance = subKES(d.principal, d.amount_paid);
-      const days = Math.floor((now - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24));
-
-      const existing = map.get(d.customer_id) || {
-        totalOutstanding: toKES(0),
-        oldestDays: 0,
-      };
-
-      map.set(d.customer_id, {
-        totalOutstanding: addKES(existing.totalOutstanding, balance),
-        oldestDays: Math.max(existing.oldestDays, days),
-      });
-    });
-
+  const salesMap = useMemo(() => {
+    const map = new Map<string, SaleHeader>();
+    allSales.forEach((s) => map.set(s.id, s));
     return map;
-  }, [debts]);
+  }, [allSales]);
+
+  const saleItemsBySaleId = useMemo(() => {
+    const map = new Map<string, SaleItem[]>();
+    for (const item of allSaleItems) {
+      const list = map.get(item.sale_id) || [];
+      list.push(item);
+      map.set(item.sale_id, list);
+    }
+    return map;
+  }, [allSaleItems]);
 
   const totalDeniAmount = useMemo(() => {
     return debts
@@ -150,8 +179,85 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     }, 0);
   }, [defaultedDebts]);
 
-  // Filtered debts
-  const filteredDebts = useMemo(() => {
+  // Group debts by customer for continuous chronological credit ledger
+  const customerGroupedDebts = useMemo(() => {
+    const now = Date.now();
+    const groups = new Map<string, CustomerGroupedDebts>();
+
+    debts.forEach((d) => {
+      const key = d.customer_id || d.customer_name || 'unknown';
+      const balance = subKES(d.principal, d.amount_paid);
+      const days = Math.floor((now - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24));
+      const isDefault = balance > 0 && d.status !== 'paid' && d.status !== 'written_off' && isDebtDefaulted(days, balance);
+      const isOverdue = balance > 0 && d.status !== 'paid' && d.status !== 'written_off' && days >= 30;
+
+      let group = groups.get(key);
+      if (!group) {
+        const custObj = customerMap.get(d.customer_id) || {
+          id: d.customer_id || key,
+          name: d.customer_name,
+          phone: d.customer_phone || null,
+          credit_limit: null,
+        };
+        group = {
+          customer: custObj,
+          debts: [],
+          totalOutstanding: toKES(0),
+          totalOriginal: toKES(0),
+          totalPaid: toKES(0),
+          oldestDays: 0,
+          isDefaulted: false,
+          hasOverdue: false,
+        };
+        groups.set(key, group);
+      }
+
+      group.debts.push(d);
+      group.totalOriginal = addKES(group.totalOriginal, d.principal);
+      group.totalPaid = addKES(group.totalPaid, d.amount_paid);
+
+      if (d.status !== 'paid' && d.status !== 'written_off') {
+        group.totalOutstanding = addKES(group.totalOutstanding, balance);
+        group.oldestDays = Math.max(group.oldestDays, days);
+        if (isDefault) group.isDefaulted = true;
+        if (isOverdue) group.hasOverdue = true;
+      }
+    });
+
+    // Sort debts inside each group chronologically (newest first for display, with dates)
+    groups.forEach((g) => {
+      g.debts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    });
+
+    let result = Array.from(groups.values());
+
+    // Filter by tab
+    if (filterStatus === 'open') {
+      result = result.filter((g) => g.totalOutstanding > 0);
+    } else if (filterStatus === 'overdue') {
+      result = result.filter((g) => g.totalOutstanding > 0 && g.hasOverdue);
+    } else if (filterStatus === 'defaulted') {
+      result = result.filter((g) => g.totalOutstanding > 0 && g.isDefaulted);
+    }
+
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((g) => {
+        const nameMatch = (g.customer.name || '').toLowerCase().includes(q);
+        const phoneMatch = Boolean(g.customer.phone && g.customer.phone.includes(q));
+        return nameMatch || phoneMatch;
+      });
+    }
+
+    // Sort by largest outstanding balance first
+    result.sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+
+    return result;
+  }, [debts, customerMap, filterStatus, searchQuery]);
+
+  // Filtered single debts for individual view
+  const filteredSingleDebts = useMemo(() => {
     const now = Date.now();
     return debts.filter((d) => {
       const balance = subKES(d.principal, d.amount_paid);
@@ -163,7 +269,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       if (filterStatus === 'defaulted' && (!isOpen || days < 60)) return false;
 
       if (searchQuery.trim()) {
-        const q = (searchQuery || '').toLowerCase();
+        const q = searchQuery.toLowerCase();
         return (
           (d.customer_name || '').toLowerCase().includes(q) ||
           Boolean(d.customer_phone && d.customer_phone.includes(q))
@@ -173,7 +279,19 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     });
   }, [debts, filterStatus, searchQuery]);
 
-  // Kumbusha (Remind via WhatsApp) (§8.D)
+  const toggleCustomerExpand = (custId: string) => {
+    setExpandedCustomerIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(custId)) {
+        next.delete(custId);
+      } else {
+        next.add(custId);
+      }
+      return next;
+    });
+  };
+
+  // Kumbusha (Remind via WhatsApp)
   const handleRemindCustomer = async (debt: Debt, forceModal = false) => {
     const customer = customerMap.get(debt.customer_id);
     const phone = (debt.customer_phone || customer?.phone || '').trim();
@@ -182,13 +300,11 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       (Date.now() - new Date(debt.created_at).getTime()) / (1000 * 60 * 60 * 24)
     );
 
-    // If phone number is missing, or if user explicitly clicked preview/edit, open the modal
     if (!phone || forceModal) {
       setReminderDebt(debt);
       return;
     }
 
-    // Customer has phone -> immediately launch WhatsApp to debtor's number!
     const reminderOptions: DebtorReminderOptions = {
       customerName: debt.customer_name,
       customerPhone: phone,
@@ -212,6 +328,19 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     setTimeout(() => {
       setReminderToast(null);
     }, 5000);
+  };
+
+  // Remind entire customer account statement
+  const handleRemindCustomerAccount = (group: CustomerGroupedDebts) => {
+    const openDebt = group.debts.find((d) => subKES(d.principal, d.amount_paid) > 0) || group.debts[0];
+    if (openDebt) {
+      const debtToRemind: Debt = {
+        ...openDebt,
+        principal: group.totalOriginal,
+        amount_paid: group.totalPaid,
+      };
+      handleRemindCustomer(debtToRemind);
+    }
   };
 
   const handleSaveDebtorPhone = async (debt: Debt, newPhone: string) => {
@@ -251,40 +380,78 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     void syncWriteThrough(entries);
   };
 
-  const handleOpenPayment = (debt: Debt) => {
+  // Open Payment for single debt
+  const handleOpenSingleDebtPayment = (debt: Debt) => {
     const balance = subKES(debt.principal, debt.amount_paid);
-    setPaymentDebt(debt);
+    setPaymentTarget({
+      type: 'debt',
+      debtId: debt.id,
+      customerName: debt.customer_name,
+      outstanding: balance,
+    });
     setPaymentAmountStr(String(balance));
     setPaymentMethod('cash');
   };
 
+  // Open Payment for entire Customer Account
+  const handleOpenCustomerPayment = (group: CustomerGroupedDebts) => {
+    setPaymentTarget({
+      type: 'customer',
+      customerId: group.customer.id,
+      customerName: group.customer.name,
+      outstanding: group.totalOutstanding,
+    });
+    setPaymentAmountStr(String(group.totalOutstanding));
+    setPaymentMethod('cash');
+  };
+
   const handleSavePayment = async () => {
-    if (!paymentDebt) return;
+    if (!paymentTarget) return;
     const amountNum = Number(paymentAmountStr);
     if (!amountNum || amountNum <= 0) return;
 
     setSavingPayment(true);
     try {
       const kes = toKES(amountNum);
-      const res = await recordDebtPayment({
-        debtId: paymentDebt.id,
-        amount: kes,
-        method: paymentMethod,
-      });
+      if (paymentTarget.type === 'customer' && paymentTarget.customerId) {
+        const res = await recordCustomerDebtPayment({
+          customerId: paymentTarget.customerId,
+          amount: kes,
+          method: paymentMethod,
+        });
 
-      if (typeof window !== 'undefined') {
-        window.alert(
-          res.newBalance <= 0
-            ? isEn
-              ? 'Congratulations! Debt fully settled and closed.'
-              : 'Hongera! Deni limelipwa lote na limefungwa.'
-            : isEn
-            ? `Payment of ${formatKES(kes)} recorded. Remaining balance: ${formatKES(res.newBalance)}`
-            : `Malipo ya ${formatKES(kes)} yamerekodiwa. Salio lililobaki: ${formatKES(res.newBalance)}`
-        );
+        if (typeof window !== 'undefined') {
+          window.alert(
+            res.remainingBalance <= 0
+              ? isEn
+                ? `Payment of ${formatKES(kes)} recorded! Customer account fully cleared.`
+                : `Malipo ya ${formatKES(kes)} yamerekodiwa! Akaunti ya mteja huyu imelipwa yote.`
+              : isEn
+              ? `Payment of ${formatKES(kes)} recorded. Remaining customer balance: ${formatKES(res.remainingBalance)}`
+              : `Malipo ya ${formatKES(kes)} yamerekodiwa. Salio lililobaki kwa mteja: ${formatKES(res.remainingBalance)}`
+          );
+        }
+      } else if (paymentTarget.debtId) {
+        const res = await recordDebtPayment({
+          debtId: paymentTarget.debtId,
+          amount: kes,
+          method: paymentMethod,
+        });
+
+        if (typeof window !== 'undefined') {
+          window.alert(
+            res.newBalance <= 0
+              ? isEn
+                ? 'Debt fully settled and closed.'
+                : 'Deni limelipwa lote na limefungwa.'
+              : isEn
+              ? `Payment of ${formatKES(kes)} recorded. Remaining balance: ${formatKES(res.newBalance)}`
+              : `Malipo ya ${formatKES(kes)} yamerekodiwa. Salio: ${formatKES(res.newBalance)}`
+          );
+        }
       }
 
-      setPaymentDebt(null);
+      setPaymentTarget(null);
     } catch {
       if (typeof window !== 'undefined') {
         window.alert(isEn ? 'Error recording payment.' : 'Kosa katika kurekodi malipo.');
@@ -294,7 +461,17 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     }
   };
 
-  // Add Standalone Debt
+  // Open "Add Credit" pre-filled for a specific customer
+  const handleOpenAddCreditForCustomer = (cust: { id: string; name: string; phone?: string | null }) => {
+    setCustomerId(cust.id);
+    setCustName(cust.name);
+    setCustPhone(cust.phone || '');
+    setAmountStr('');
+    setNoteStr('');
+    setIsAddDeniOpen(true);
+  };
+
+  // Add Standalone / Additional Debt
   const handleSaveNewDeni = async () => {
     const amountNum = Number(amountStr);
     if (!amountNum || amountNum <= 0) {
@@ -357,6 +534,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       status: 'open',
       due_date: null,
       sale_id: null,
+      override_reason: noteStr.trim() ? `Note: ${noteStr.trim()}` : null,
       created_at: now,
       updated_at: now,
       device_id: deviceId,
@@ -374,14 +552,26 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
 
     void syncWriteThrough(syncEntries);
 
+    // Auto expand this customer
+    setExpandedCustomerIds((prev) => new Set([...prev, finalCustId]));
+
     setIsAddDeniOpen(false);
     setAmountStr('');
+    setNoteStr('');
     setCustName('');
     setCustPhone('');
     setCustomerId('');
+
+    if (typeof window !== 'undefined') {
+      window.alert(
+        isEn
+          ? `Added new credit of ${formatKES(toKES(amountNum))} to ${selectedCust.name}'s account.`
+          : `Deni jipya la ${formatKES(toKES(amountNum))} limeongezwa kwa ${selectedCust.name}.`
+      );
+    }
   };
 
-  // Update Customer Credit Limit (Feature 3)
+  // Update Customer Credit Limit
   const handleSaveCreditLimit = async () => {
     if (!editingCustomer) return;
     const limit = toKES(Number(creditLimitStr) || 3000);
@@ -419,16 +609,23 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
           <h1 className="text-xl font-black text-slate-900 leading-tight">
             {t.deniTitle}
           </h1>
-          <p className="text-xs text-slate-500">
-            {isEn ? 'Track customer credit & pending balances' : 'Fuatilia wateja wanaodaiwa dukani'}
+          <p className="text-xs text-slate-500 font-medium">
+            {isEn ? 'Customer Credit Accounts & Dated Ledgers' : 'Akaunti za Madeni ya Wateja & Kumbukumbu za Tarehe'}
           </p>
         </div>
 
         <Button
           variant="gradient"
           size="sm"
-          onClick={() => setIsAddDeniOpen(true)}
-          className="flex items-center gap-1.5 shadow-sm"
+          onClick={() => {
+            setCustomerId('');
+            setCustName('');
+            setCustPhone('');
+            setAmountStr('');
+            setNoteStr('');
+            setIsAddDeniOpen(true);
+          }}
+          className="flex items-center gap-1.5 shadow-sm text-xs font-bold"
         >
           <Plus className="w-4 h-4" />
           {isEn ? 'New Credit' : 'Deni Jipya'}
@@ -445,79 +642,117 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
             <div className="text-3xl font-black tabular-nums mt-0.5">
               {formatKES(totalDeniAmount)}
             </div>
+            <div className="text-[10px] text-amber-100 mt-1">
+              {isEn
+                ? `${customerGroupedDebts.length} active customer accounts`
+                : `Akaunti za wateja ${customerGroupedDebts.length}`}
+            </div>
           </div>
-          <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-2xl">
+          <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-2xl shadow-inner">
             📖
           </div>
         </div>
 
-        {/* Filter Chips & Search Bar */}
+        {/* Search Bar */}
+        <div className="relative">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={isEn ? 'Search customer name or phone number...' : 'Tafuta jina la mteja au nambari ya simu...'}
+            className="w-full h-11 pl-10 pr-4 text-xs bg-white border border-slate-200 rounded-xl shadow-2xs focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+
+        {/* View Mode & Filter Tabs */}
         <div className="space-y-2">
-          <div className="relative">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t.creditSearchPlaceholder}
-              className="w-full h-10 pl-9 pr-3 text-xs bg-slate-100 rounded-xl border border-transparent focus:bg-white focus:border-emerald-500 focus:outline-none"
-            />
+          {/* View Mode Toggle: Customer Grouped Ledger vs Single Entries */}
+          <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setViewMode('customer_ledger')}
+              className={`py-1.5 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 ${
+                viewMode === 'customer_ledger'
+                  ? 'bg-white text-emerald-800 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{isEn ? 'Customer Ledgers (Grouped)' : 'Akaunti za Wateja (Pamoja)'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('single_entries')}
+              className={`py-1.5 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 ${
+                viewMode === 'single_entries'
+                  ? 'bg-white text-emerald-800 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <History className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{isEn ? 'Single Entries' : 'Miamala Moja Moja'}</span>
+            </button>
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
+          {/* Status Filters */}
+          <div className="flex gap-1.5 overflow-x-auto pb-1 text-xs scrollbar-none">
             <button
               type="button"
               onClick={() => setFilterStatus('open')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shrink-0 ${
                 filterStatus === 'open'
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'bg-white border border-slate-200 text-slate-700'
+              }`}
+            >
+              <span>{isEn ? 'Open Credit' : 'Madeni Yaliyopo'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setFilterStatus('overdue')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shrink-0 ${
+                filterStatus === 'overdue'
                   ? 'bg-amber-600 text-white shadow-xs'
                   : 'bg-white border border-slate-200 text-slate-700'
               }`}
             >
-              {isEn ? 'Unpaid (Open)' : 'Yasiyolipwa'}
+              <span>{isEn ? '30+ Days Overdue' : 'Siku 30+'}</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setFilterStatus('overdue')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                filterStatus === 'overdue'
-                  ? 'bg-rose-600 text-white shadow-xs'
-                  : 'bg-white border border-slate-200 text-slate-700'
-              }`}
-            >
-              {isEn ? 'Overdue 30+ Days ⚠' : 'Zaidi ya Siku 30 ⚠'}
-            </button>
+
             <button
               type="button"
               onClick={() => setFilterStatus('defaulted')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shrink-0 ${
                 filterStatus === 'defaulted'
-                  ? 'bg-gradient-to-r from-amber-600 to-rose-600 text-white shadow-xs'
-                  : 'bg-amber-50 border border-amber-300 text-amber-900'
+                  ? 'bg-rose-700 text-white shadow-xs'
+                  : 'bg-white border border-slate-200 text-slate-700'
               }`}
             >
-              <span>{isEn ? 'Defaulted (2+ Mo / 70% Claim)' : 'Yaliyofifia (Miezi 2+ / Fidia 70%)'}</span>
+              <span>{isEn ? '🛡️ 60+ Days Defaulted (70% Claim)' : '🛡️ Miezi 2+ Fidia 70%'}</span>
               {defaultedDebts.length > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-black">
                   {defaultedDebts.length}
                 </span>
               )}
             </button>
+
             <button
               type="button"
               onClick={() => setFilterStatus('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0 ${
                 filterStatus === 'all'
                   ? 'bg-slate-800 text-white shadow-xs'
                   : 'bg-white border border-slate-200 text-slate-700'
               }`}
             >
-              {isEn ? 'All Debts' : 'Yote'}
+              {isEn ? 'All Records' : 'Yote'}
             </button>
           </div>
         </div>
 
-        {/* 70% Seller Compensation Alert Banner (When defaulted debts exist) */}
+        {/* 70% Seller Compensation Alert Banner */}
         {defaultedDebts.length > 0 && filterStatus !== 'defaulted' && (
           <div className="p-3.5 bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-amber-500/15 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
             <div className="space-y-0.5 min-w-0">
@@ -525,14 +760,14 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                 <span className="text-sm">🛡️</span>
                 <span>
                   {isEn
-                    ? `${defaultedDebts.length} Defaulted Product Debt(s) Eligible for 70% Compensation`
+                    ? `${defaultedDebts.length} Defaulted Debt(s) Eligible for 70% Compensation`
                     : `Madeni ${defaultedDebts.length} Yaliyofifia Yanastahili Fidia ya 70%`}
                 </span>
               </div>
               <p className="text-[11px] text-amber-800 leading-tight">
                 {isEn
                   ? `Uncleared after 2 months. Total compensation entitlement: ${formatKES(totalCompensationEligible)}.`
-                  : `Hayajalipwa baada ya miezi 2. Jumla ya fidia unayostahili: ${formatKES(totalCompensationEligible)}.`}
+                  : `Hayajalipwa baada ya miezi 2. Fidia unayostahili: ${formatKES(totalCompensationEligible)}.`}
               </p>
             </div>
             <button
@@ -545,221 +780,379 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
           </div>
         )}
 
-        {/* Debts List */}
-        {filteredDebts.length === 0 ? (
-          <div className="p-8 text-center bg-white rounded-2xl border border-slate-200">
-            <Check className="w-12 h-12 text-emerald-600 mx-auto mb-2" />
-            <div className="font-bold text-base text-slate-800">
-              {isEn ? 'No Debts Found' : 'Hakuna Deni Lililopatikana'}
-            </div>
-            <p className="text-xs text-slate-500 mt-1">
-              {isEn
-                ? 'Your customers have no outstanding credit under these filter criteria.'
-                : 'Wateja wako hawana madeni yasiyolipwa chini ya masharti haya.'}
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100 bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-            {filteredDebts.map((d) => {
-              const balance = subKES(d.principal, d.amount_paid);
-              const isPaid = balance <= 0 || d.status === 'paid';
-              const daysOld = Math.floor(
-                (Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24)
-              );
-              const isDefaulted = !isPaid && isDebtDefaulted(daysOld, balance);
-              const compAmount = calculateDefaultCompensation(balance);
+        {/* ========================================================================= */}
+        {/* VIEW MODE 1: CUSTOMER GROUPED CONTINUOUS CREDIT LEDGER (DEFAULT)          */}
+        {/* ========================================================================= */}
+        {viewMode === 'customer_ledger' && (
+          <div className="space-y-3 animate-in fade-in">
+            {customerGroupedDebts.length === 0 ? (
+              <div className="p-8 text-center bg-white rounded-2xl border border-slate-200">
+                <Check className="w-12 h-12 text-emerald-600 mx-auto mb-2" />
+                <div className="font-bold text-base text-slate-800">
+                  {isEn ? 'No Customer Debts Found' : 'Hakuna Madeni ya Wateja'}
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  {isEn
+                    ? 'No customer accounts matching this filter criteria.'
+                    : 'Hakuna akaunti za wateja zilizolingana na vigezo hivi.'}
+                </p>
+              </div>
+            ) : (
+              customerGroupedDebts.map((group) => {
+                const isExpanded = expandedCustomerIds.has(group.customer.id);
+                const limit = (group.customer as Customer)?.credit_limit ?? toKES(3000);
+                const isPaidOff = group.totalOutstanding <= 0;
+                const limitUsagePercent = Math.min(100, Math.round((group.totalOutstanding / limit) * 100));
 
-              // Coloured Age Dot (§8.D)
-              const dotColor = isDefaulted
-                ? 'bg-rose-600 ring-2 ring-rose-300 animate-pulse'
-                : daysOld < 7
-                ? 'bg-emerald-500'
-                : daysOld < 30
-                ? 'bg-amber-500'
-                : 'bg-rose-600 animate-pulse';
+                const dotColor = group.isDefaulted
+                  ? 'bg-rose-600 ring-2 ring-rose-300 animate-pulse'
+                  : group.oldestDays < 7
+                  ? 'bg-emerald-500'
+                  : group.oldestDays < 30
+                  ? 'bg-amber-500'
+                  : 'bg-rose-600 animate-pulse';
 
-              const customer = customerMap.get(d.customer_id);
-              const limit = customer?.credit_limit ?? toKES(3000);
-              const custTotal = customerDebtTotals.get(d.customer_id)?.totalOutstanding ?? balance;
-              const limitUsagePercent = Math.min(100, Math.round((custTotal / limit) * 100));
+                return (
+                  <div
+                    key={group.customer.id}
+                    className={`bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition ${
+                      group.isDefaulted ? 'border-l-4 border-l-rose-600' : ''
+                    }`}
+                  >
+                    {/* Customer Account Header Card */}
+                    <div className="p-3.5 space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2.5">
+                          <span
+                            className={`w-3 h-3 rounded-full mt-1 flex-shrink-0 ${dotColor}`}
+                            title={
+                              group.isDefaulted
+                                ? isEn ? 'Defaulted (2+ Months Overdue)' : 'Deni Lililofifia (Miezi 2+)'
+                                : isEn ? `Oldest transaction is ${group.oldestDays} days old` : `Deni la zamani lina siku ${group.oldestDays}`
+                            }
+                          />
 
-              return (
-                <div
-                  key={d.id}
-                  className={`p-3.5 space-y-2.5 transition ${
-                    isDefaulted ? 'bg-amber-50/40 border-l-4 border-l-rose-600' : ''
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-2.5">
-                      <span
-                        className={`w-3 h-3 rounded-full mt-1 flex-shrink-0 ${dotColor}`}
-                        title={
-                          isDefaulted
-                            ? isEn ? 'Defaulted (2+ Months Overdue)' : 'Deni Lililofifia (Miezi 2+)'
-                            : isEn ? `Debt is ${daysOld} days old` : `Deni hili lina siku ${daysOld}`
-                        }
-                      />
-                      <div>
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-bold text-sm text-slate-900">
-                            {d.customer_name}
-                          </span>
-                          {isDefaulted && (
-                            <span className="px-1.5 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-black uppercase tracking-wider border border-rose-200">
-                              {isEn ? '⚠️ Defaulted (2+ Mo)' : '⚠️ Lililofifia'}
-                            </span>
-                          )}
-                          {customer && isOwner && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingCustomer(customer);
-                                setCreditLimitStr(String(limit));
-                              }}
-                              className="text-[10px] text-slate-400 hover:text-emerald-700 underline"
-                              title={isEn ? 'Set customer credit limit' : 'Weka kikomo cha mkopo'}
-                            >
-                              {isEn ? `Limit: ${formatKES(limit)}` : `Kikomo: ${formatKES(limit)}`}
-                            </button>
-                          )}
+                          <div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-black text-sm text-slate-900">
+                                {group.customer.name}
+                              </span>
+                              {group.isDefaulted && (
+                                <span className="px-1.5 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-black uppercase tracking-wider border border-rose-200">
+                                  {isEn ? '⚠️ Defaulted' : '⚠️ Lililofifia'}
+                                </span>
+                              )}
+                              {(group.customer as Customer) && isOwner && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingCustomer(group.customer as Customer);
+                                    setCreditLimitStr(String(limit));
+                                  }}
+                                  className="text-[10px] text-slate-400 hover:text-emerald-700 underline font-medium"
+                                  title={isEn ? 'Set customer credit limit' : 'Weka kikomo cha mkopo'}
+                                >
+                                  {isEn ? `Limit: ${formatKES(limit)}` : `Kikomo: ${formatKES(limit)}`}
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                              {group.customer.phone ? (
+                                <span className="flex items-center gap-1 font-medium">
+                                  <Phone className="w-3 h-3 text-slate-400" />
+                                  {group.customer.phone}
+                                </span>
+                              ) : (
+                                <span className="text-[11px] text-amber-600">
+                                  {isEn ? 'No phone added' : 'Hakuna namba ya simu'}
+                                </span>
+                              )}
+                              <span className="text-slate-300">•</span>
+                              <span className="text-[11px] text-slate-500">
+                                {group.debts.length} {group.debts.length === 1 ? (isEn ? 'entry' : 'muamala') : (isEn ? 'entries' : 'miamala')}
+                              </span>
+                            </div>
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
-                          <span className={`flex items-center gap-1 ${isDefaulted ? 'text-rose-700 font-bold' : ''}`}>
-                            <Clock className="w-3 h-3" />
-                            {daysOld === 0
-                              ? isEn ? 'Today' : 'Leo'
-                              : isEn ? `${daysOld} days ago` : `Siku ${daysOld}`}
-                          </span>
-                          {d.customer_phone && (
-                            <span className="flex items-center gap-1">
-                              <Phone className="w-3 h-3" />
-                              {d.customer_phone}
-                            </span>
+                        <div className="text-right">
+                          <div
+                            className={`text-lg font-black tabular-nums ${
+                              isPaidOff ? 'text-slate-400 line-through' : 'text-slate-900'
+                            }`}
+                          >
+                            {formatKES(group.totalOutstanding)}
+                          </div>
+                          {group.totalPaid > 0 && !isPaidOff && (
+                            <div className="text-[10px] text-emerald-700 font-bold tabular-nums">
+                              {isEn ? `Paid ${formatKES(group.totalPaid)}` : `Umelipa ${formatKES(group.totalPaid)}`}
+                            </div>
                           )}
                         </div>
                       </div>
-                    </div>
 
-                    <div className="text-right">
-                      <div
-                        className={`text-base font-black tabular-nums ${
-                          isPaid ? 'text-slate-400 line-through' : 'text-slate-900'
-                        }`}
-                      >
-                        {formatKES(balance)}
-                      </div>
-                      {d.amount_paid > 0 && !isPaid && (
-                        <div className="text-[10px] text-emerald-700 font-semibold tabular-nums">
-                          {isEn ? `Paid ${formatKES(d.amount_paid)}` : `Umelipa ${formatKES(d.amount_paid)}`}
+                      {/* Credit Limit Progress Bar */}
+                      {!isPaidOff && !group.isDefaulted && (
+                        <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              limitUsagePercent >= 100
+                                ? 'bg-rose-600'
+                                : limitUsagePercent >= 80
+                                ? 'bg-amber-500'
+                                : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${limitUsagePercent}%` }}
+                          />
                         </div>
                       )}
-                    </div>
-                  </div>
 
-                  {/* 70% Compensation Policy Callout (Strictly for Defaulted debts >= 2 months) */}
-                  {isDefaulted && (
-                    <div className="p-2.5 bg-gradient-to-r from-amber-100 to-rose-50 border border-amber-300 rounded-xl space-y-1 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-black text-amber-900 flex items-center gap-1">
-                          <span>🛡️</span>
-                          <span>{isEn ? '70% Compensation Entitlement:' : 'Kiasi cha Fidia ya 70%:'}</span>
-                        </span>
-                        <span className="font-black text-emerald-800 text-sm tabular-nums">
-                          {formatKES(compAmount)}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-600 leading-tight">
-                        {isEn
-                          ? 'This product debt has remained unpaid for over 2 months. You are eligible to claim 70% compensation via the helpline.'
-                          : 'Deni hili la bidhaa halijalipwa kwa zaidi ya miezi 2. Unastahiki kudai fidia ya 70% kupitia dawati la msaada.'}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Customer Credit Limit Progress Bar (Feature 3) */}
-                  {!isPaid && !isDefaulted && (
-                    <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          limitUsagePercent >= 100
-                            ? 'bg-rose-600'
-                            : limitUsagePercent >= 80
-                            ? 'bg-amber-500'
-                            : 'bg-emerald-500'
-                        }`}
-                        style={{ width: `${limitUsagePercent}%` }}
-                      />
-                    </div>
-                  )}
-
-                  {/* Action Buttons */}
-                  {!isPaid && (
-                    <div className="flex items-center gap-1.5 pt-1 justify-end flex-wrap">
-                      {/* Defaulted 70% Helpline Claim Button (Only for defaulted debts) */}
-                      {isDefaulted && (
+                      {/* Account Action Buttons */}
+                      <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-100 flex-wrap">
+                        {/* Toggle Statement View */}
                         <button
                           type="button"
-                          onClick={() => setClaimDebt(d)}
-                          className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-700 hover:to-rose-700 text-white text-xs font-black shadow-xs active:scale-95 transition flex items-center gap-1.5 cursor-pointer"
-                          title={isEn ? 'Claim 70% compensation via Helpline' : 'Dai fidia ya 70% kupitia Msaada'}
+                          onClick={() => toggleCustomerExpand(group.customer.id)}
+                          className="px-2.5 py-1 text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1 rounded-lg hover:bg-slate-50 cursor-pointer"
                         >
-                          <span>🛡️</span>
-                          <span>{isEn ? 'Claim 70% Compensation' : 'Dai Fidia 70%'}</span>
+                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                          <span>{isExpanded ? (isEn ? 'Hide Dated History' : 'Funga Historia') : (isEn ? 'View Dated History' : 'Tazama Historia ya Tarehe')}</span>
                         </button>
-                      )}
 
-                      {/* Remind via WhatsApp Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleRemindCustomer(d)}
-                        className="px-3 py-1.5 rounded-xl bg-[#25D366] hover:bg-[#20ba5a] text-white text-xs font-black shadow-xs active:scale-95 transition flex items-center gap-1.5 cursor-pointer"
-                        title={
-                          isEn
-                            ? `Send WhatsApp reminder to ${d.customer_name}`
-                            : `Tuma kumbusho la WhatsApp kwa ${d.customer_name}`
-                        }
-                      >
-                        <span className="text-sm leading-none">💬</span>
-                        <span>{isEn ? 'Remind' : 'Kumbusha'}</span>
-                      </button>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Add Credit (Take Products Today) */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenAddCreditForCustomer({
+                              id: group.customer.id,
+                              name: group.customer.name,
+                              phone: group.customer.phone,
+                            })}
+                            className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-bold flex items-center gap-1 active:scale-95 transition cursor-pointer"
+                            title={isEn ? 'Add new credit taken today' : 'Ongeza deni lililochukuliwa leo'}
+                          >
+                            <Plus className="w-3.5 h-3.5 text-amber-700" />
+                            <span>{isEn ? 'Add Credit Today' : 'Ongeza Deni Leo'}</span>
+                          </button>
 
-                      {/* Options / Preview Reminder Sheet */}
-                      <button
-                        type="button"
-                        onClick={() => handleRemindCustomer(d, true)}
-                        className="p-1.5 rounded-xl border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition cursor-pointer"
-                        title={isEn ? 'Preview / Edit Reminder' : 'Angalia / Badilisha Kumbusho'}
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </button>
+                          {/* WhatsApp Statement */}
+                          {!isPaidOff && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemindCustomerAccount(group)}
+                              className="px-2.5 py-1 rounded-lg bg-[#25D366] hover:bg-[#20ba5a] text-white text-xs font-black shadow-2xs active:scale-95 transition flex items-center gap-1 cursor-pointer"
+                            >
+                              <span className="text-xs">💬</span>
+                              <span>{isEn ? 'Statement' : 'Taarifa'}</span>
+                            </button>
+                          )}
 
-                      <Button
-                        variant="gradient"
-                        size="sm"
-                        onClick={() => handleOpenPayment(d)}
-                        className="px-3 py-1.5 text-xs font-bold"
-                      >
-                        {isEn ? 'Record Payment' : 'Rekodi Malipo'}
-                      </Button>
+                          {/* Record Payment */}
+                          {!isPaidOff && (
+                            <Button
+                              variant="gradient"
+                              size="sm"
+                              onClick={() => handleOpenCustomerPayment(group)}
+                              className="px-2.5 py-1 text-xs font-bold"
+                            >
+                              {isEn ? 'Pay Balance' : 'Lipa Deni'}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
+
+                    {/* Expandable Chronological Dated Ledger */}
+                    {isExpanded && (
+                      <div className="bg-slate-50/90 border-t border-slate-200 p-3 space-y-2 animate-in fade-in">
+                        <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase tracking-wider px-1">
+                          <span>{isEn ? 'Dated Purchases & Items Taken' : 'Historia ya Bidhaa & Tarehe Zilizochukuliwa'}</span>
+                          <span>{group.debts.length} {isEn ? 'Records' : 'Kumbukumbu'}</span>
+                        </div>
+
+                        <div className="divide-y divide-slate-200/80 bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+                          {group.debts.map((d) => {
+                            const dBalance = subKES(d.principal, d.amount_paid);
+                            const dPaid = dBalance <= 0 || d.status === 'paid';
+                            const dDays = Math.floor(
+                              (Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24)
+                            );
+                            const sale = d.sale_id ? salesMap.get(d.sale_id) : null;
+                            const items = d.sale_id ? saleItemsBySaleId.get(d.sale_id) || [] : [];
+
+                            return (
+                              <div key={d.id} className="p-3 space-y-1.5 text-xs">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="flex items-center gap-1.5">
+                                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                      <span className="font-bold text-slate-800">
+                                        {new Date(d.created_at).toLocaleDateString('en-KE', {
+                                          weekday: 'short',
+                                          day: 'numeric',
+                                          month: 'short',
+                                          year: 'numeric',
+                                        })}
+                                      </span>
+                                      <span className="text-[10px] text-slate-400">
+                                        ({new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                                      </span>
+                                    </div>
+
+                                    <div className="text-[11px] text-slate-500 mt-0.5 pl-5">
+                                      {sale ? (
+                                        <span>
+                                          {isEn ? `Sale #${sale.sale_no}` : `Mauzo #${sale.sale_no}`} · {items.length} {items.length === 1 ? (isEn ? 'item' : 'bidhaa') : (isEn ? 'items' : 'bidhaa')}
+                                        </span>
+                                      ) : d.override_reason ? (
+                                        <span>{d.override_reason}</span>
+                                      ) : (
+                                        <span>{isEn ? 'Direct store credit' : 'Deni la moja kwa moja'}</span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="text-right">
+                                    <div className="font-bold text-slate-900 tabular-nums">
+                                      {formatKES(d.principal)}
+                                    </div>
+                                    <div className={`text-[10px] font-semibold tabular-nums ${dPaid ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                      {dPaid
+                                        ? isEn ? '✓ Paid' : '✓ Limelipwa'
+                                        : isEn
+                                        ? `Rem: ${formatKES(dBalance)}`
+                                        : `Bado: ${formatKES(dBalance)}`}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Itemized product breakdown for this date */}
+                                {items.length > 0 && (
+                                  <div className="ml-5 p-2 bg-slate-50 rounded-lg text-[11px] text-slate-600 space-y-0.5 border border-slate-100">
+                                    {items.map((it, idx) => (
+                                      <div key={idx} className="flex justify-between">
+                                        <span>• {it.product_name} x{it.qty}</span>
+                                        <span className="font-bold tabular-nums">{formatKES(it.line_total)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Single Entry Actions inside ledger */}
+                                {!dPaid && (
+                                  <div className="flex justify-end gap-1.5 pt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemindCustomer(d)}
+                                      className="px-2 py-0.5 text-[11px] font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 cursor-pointer"
+                                    >
+                                      💬 {isEn ? 'Remind This' : 'Kumbusha Hili'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenSingleDebtPayment(d)}
+                                      className="px-2 py-0.5 text-[11px] font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer"
+                                    >
+                                      💵 {isEn ? 'Pay Entry' : 'Lipa Muamala'}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* VIEW MODE 2: SINGLE ENTRIES VIEW (LEGACY AUDIT VIEW)                      */}
+        {/* ========================================================================= */}
+        {viewMode === 'single_entries' && (
+          <div className="divide-y divide-slate-100 bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden animate-in fade-in">
+            {filteredSingleDebts.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-xs">
+                {isEn ? 'No debts found.' : 'Hakuna madeni yaliyopatikana.'}
+              </div>
+            ) : (
+              filteredSingleDebts.map((d) => {
+                const balance = subKES(d.principal, d.amount_paid);
+                const isPaid = balance <= 0 || d.status === 'paid';
+                const daysOld = Math.floor(
+                  (Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24)
+                );
+                const isDefaulted = !isPaid && isDebtDefaulted(daysOld, balance);
+                const compAmount = calculateDefaultCompensation(balance);
+
+                return (
+                  <div key={d.id} className="p-3.5 space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-sm text-slate-900">{d.customer_name}</div>
+                        <div className="text-xs text-slate-500">
+                          {new Date(d.created_at).toLocaleDateString()} · {daysOld} {isEn ? 'days ago' : 'siku zilizopita'}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-base font-black tabular-nums ${isPaid ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                          {formatKES(balance)}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-semibold tabular-nums">
+                          {isEn ? `Orig: ${formatKES(d.principal)}` : `Awali: ${formatKES(d.principal)}`}
+                        </div>
+                      </div>
+                    </div>
+
+                    {!isPaid && (
+                      <div className="flex justify-end gap-1.5 pt-1">
+                        {isDefaulted && (
+                          <button
+                            type="button"
+                            onClick={() => setClaimDebt(d)}
+                            className="px-2.5 py-1 rounded-lg bg-rose-600 text-white text-xs font-bold"
+                          >
+                            🛡️ {isEn ? '70% Claim' : 'Dai 70%'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemindCustomer(d)}
+                          className="px-2.5 py-1 rounded-lg bg-[#25D366] text-white text-xs font-bold"
+                        >
+                          💬 {isEn ? 'Remind' : 'Kumbusha'}
+                        </button>
+                        <Button
+                          variant="gradient"
+                          size="sm"
+                          onClick={() => handleOpenSingleDebtPayment(d)}
+                          className="px-2.5 py-1 text-xs font-bold"
+                        >
+                          {isEn ? 'Record Payment' : 'Lipa'}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
       </div>
 
       {/* Partial / Full Payment Sheet */}
       <Sheet
-        isOpen={Boolean(paymentDebt)}
-        onClose={() => setPaymentDebt(null)}
+        isOpen={Boolean(paymentTarget)}
+        onClose={() => setPaymentTarget(null)}
         title={isEn ? 'Record Debt Payment' : 'Rekodi Malipo ya Deni'}
-        subtitle={paymentDebt ? `${isEn ? 'Customer' : 'Mteja'}: ${paymentDebt.customer_name}` : ''}
+        subtitle={paymentTarget ? `${isEn ? 'Customer' : 'Mteja'}: ${paymentTarget.customerName}` : ''}
       >
-        {paymentDebt && (
+        {paymentTarget && (
           <div className="space-y-4 select-none">
             <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-center">
               <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">
@@ -770,11 +1163,11 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
               </div>
               <div className="text-xs text-slate-400 mt-1">
                 {isEn ? 'Total outstanding balance:' : 'Salio lote:'}{' '}
-                {formatKES(subKES(paymentDebt.principal, paymentDebt.amount_paid))}
+                {formatKES(paymentTarget.outstanding)}
               </div>
             </div>
 
-            {/* Payment Method Toggle */}
+            {/* Payment Method Toggle: Cash vs Equity Till */}
             <div className="flex rounded-xl p-1 bg-slate-100 border border-slate-200">
               <button
                 type="button"
@@ -792,7 +1185,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                   paymentMethod === 'mpesa' ? 'bg-white text-emerald-800 shadow-xs' : 'text-slate-500'
                 }`}
               >
-                📱 M-Pesa
+                📱 {isEn ? 'M-Pesa / Till' : 'M-Pesa / Till'}
               </button>
             </div>
 
@@ -810,12 +1203,12 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
         )}
       </Sheet>
 
-      {/* Add Standalone Debt Sheet */}
+      {/* Add Standalone / Additional Debt Sheet */}
       <Sheet
         isOpen={isAddDeniOpen}
         onClose={() => setIsAddDeniOpen(false)}
-        title={isEn ? 'Record New Credit' : 'Weka Deni Jipya'}
-        subtitle={isEn ? 'Customer took goods or cash on credit' : 'Mteja amechukua bidhaa au fedha za mkopo'}
+        title={isEn ? 'Record Credit Purchase' : 'Weka Deni Jipya la Leo'}
+        subtitle={isEn ? 'Add dated credit entry to customer ledger' : 'Weka bidhaa au fedha alizochukua mteja leo'}
       >
         <div className="space-y-4 select-none">
           <div>
@@ -824,7 +1217,14 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
             </label>
             <select
               value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
+              onChange={(e) => {
+                setCustomerId(e.target.value);
+                const found = customers.find((c) => c.id === e.target.value);
+                if (found) {
+                  setCustName(found.name);
+                  setCustPhone(found.phone || '');
+                }
+              }}
               className="w-full h-11 px-3 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:outline-none"
             >
               <option value="">{isEn ? '-- New Customer --' : '-- Mteja Mpya --'}</option>
@@ -849,7 +1249,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                 type="tel"
                 value={custPhone}
                 onChange={(e) => setCustPhone(e.target.value)}
-                placeholder={isEn ? 'Phone Number (Optional: 07...)' : 'Nambari ya Simu (Hiari: 07...)'}
+                placeholder={isEn ? 'Phone Number (e.g. 07...)' : 'Nambari ya Simu (mfano 07...)'}
                 className="w-full h-11 px-3 bg-white border border-slate-300 rounded-xl text-xs"
               />
             </div>
@@ -869,18 +1269,31 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
             />
           </div>
 
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              {isEn ? 'Products Taken / Note (Optional):' : 'Bidhaa Alizochukua / Maelezo (Hiari):'}
+            </label>
+            <input
+              type="text"
+              value={noteStr}
+              onChange={(e) => setNoteStr(e.target.value)}
+              placeholder={isEn ? 'e.g. Sugar 1kg + Cooking Oil 500ml' : 'mfano Sukari 1kg + Mafuta 500ml'}
+              className="w-full h-11 px-3 text-xs bg-white border border-slate-300 rounded-xl"
+            />
+          </div>
+
           <Button
             variant="gradient"
             size="hero"
             fullWidth
             onClick={handleSaveNewDeni}
           >
-            {isEn ? 'Save Credit' : 'Hifadhi Deni'}
+            {isEn ? 'Save to Customer Account' : 'Hifadhi kwenye Akaunti ya Mteja'}
           </Button>
         </div>
       </Sheet>
 
-      {/* Credit Limit Setting Modal (Feature 3) */}
+      {/* Credit Limit Setting Modal */}
       <Sheet
         isOpen={Boolean(editingCustomer)}
         onClose={() => setEditingCustomer(null)}
@@ -943,7 +1356,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
         />
       )}
 
-      {/* Defaulted Debt 70% Compensation Helpline Claim Modal (2+ Months Overdue) */}
+      {/* Defaulted Debt 70% Compensation Helpline Claim Modal */}
       {claimDebt && (
         <DefaultedDebtClaimModal
           isOpen={Boolean(claimDebt)}

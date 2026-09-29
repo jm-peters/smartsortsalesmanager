@@ -109,7 +109,7 @@ export function generateReceiptSummaryText(options: ReceiptSummaryOptions): stri
   // Payment Method
   let methodLabel = isEn ? 'Cash' : 'Pesa Taslimu (Cash)';
   if (paymentMethod === 'mpesa') {
-    methodLabel = `M-Pesa ${tillNumber ? `(Till: ${tillNumber})` : ''}`.trim();
+    methodLabel = tillNumber ? `M-Pesa (Till: ${tillNumber})` : 'M-Pesa';
   } else if (paymentMethod === 'deni') {
     methodLabel = isEn ? 'Credit (Deni / Unpaid)' : 'Deni (Mkopo)';
   } else if (paymentMethod === 'split') {

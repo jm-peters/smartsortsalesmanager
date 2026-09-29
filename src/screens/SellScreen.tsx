@@ -1343,16 +1343,16 @@ export const SellScreen: React.FC<SellScreenProps> = ({
             </div>
           </div>
 
-          {/* M-Pesa Till Display (§12) */}
+          {/* M-Pesa / Till Payment Display */}
           {selectedPaymentMethod === 'mpesa' && (
-            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-center space-y-1">
-              <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
-                {language === 'en' ? 'Shop Till / Paybill' : 'Nambari ya Till ya Duka'}
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-center space-y-1.5">
+              <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider block">
+                {language === 'en' ? 'Shop M-Pesa Till / Paybill' : 'Nambari ya Till / Paybill ya Duka'}
               </span>
               <div className="text-3xl font-black text-emerald-950 tracking-wider">
                 {tillNumber || '542190'}
               </div>
-              <p className="text-[11px] text-emerald-700">
+              <p className="text-xs text-emerald-800">
                 {language === 'en'
                   ? <>Customer should send <strong>{formatKES(cartTotal)}</strong> to this Till.</>
                   : <>Mteja atume <strong>{formatKES(cartTotal)}</strong> kwa Till hii.</>}
