@@ -897,7 +897,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-base">🚀</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-600 stroke-[2.5]" />
                   <span className="text-xs font-black text-emerald-900 uppercase tracking-wider">
                     {isEn ? 'Fast-Moving Products (High Priority)' : 'Bidhaa Zinazotembea Haraka (Weka Stoo)'}
                   </span>
@@ -940,7 +940,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-base">⚡</span>
+                  <Zap className="w-4 h-4 text-amber-500 stroke-[2.5]" />
                   <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
                     {isEn ? 'Steady Moving Products' : 'Bidhaa za Wastani'}
                   </span>
@@ -1057,7 +1057,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 {searchFilteredSales.map((sale) => {
                   const items = itemsBySaleId.get(sale.id) || [];
                   const cust = sale.debt_id ? debtMap.get(sale.debt_id) : debtMap.get(sale.id);
-                  const isVoided = sale.status === 'voided';
+                  const isVoided = sale.status === 'void';
 
                   return (
                     <div key={sale.id} className="p-3.5 space-y-2 hover:bg-slate-50/70 transition">

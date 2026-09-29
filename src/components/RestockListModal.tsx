@@ -311,7 +311,13 @@ export const RestockListModal: React.FC<RestockListModalProps> = ({
 
                   <div className="flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-base">{item.product.image_emoji || '📦'}</span>
+                      {item.product.image_emoji ? (
+                        <span className="text-base">{item.product.image_emoji}</span>
+                      ) : (
+                        <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-700 font-bold text-[10px] flex items-center justify-center border border-slate-200 shrink-0">
+                          {item.product.name.slice(0, 2).toUpperCase()}
+                        </span>
+                      )}
                       <span className="font-bold text-sm text-slate-900">
                         {item.product.name}
                       </span>

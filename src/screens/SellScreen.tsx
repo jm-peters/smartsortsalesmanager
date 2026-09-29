@@ -434,7 +434,23 @@ export const SellScreen: React.FC<SellScreenProps> = ({
       return;
     }
 
-    if (product.fractional_prices && product.fractional_prices.length > 0) {
+    const lowerName = product.name.toLowerCase();
+    const isSubUnitCandidate =
+      (product.fractional_prices && product.fractional_prices.length > 0) ||
+      product.unit === 'kg' ||
+      product.unit === 'ltr' ||
+      product.unit === 'crate' ||
+      product.unit === 'bale' ||
+      lowerName.includes('sugar') ||
+      lowerName.includes('sukari') ||
+      lowerName.includes('rice') ||
+      lowerName.includes('mchele') ||
+      lowerName.includes('oil') ||
+      lowerName.includes('mafuta') ||
+      lowerName.includes('unga') ||
+      lowerName.includes('flour');
+
+    if (isSubUnitCandidate) {
       setFractionalModalProduct(product);
       setCustomFractionQtyStr('0.5');
       setCustomFractionPriceStr(String(Math.round(product.selling_price * 0.5)));
@@ -946,7 +962,13 @@ export const SellScreen: React.FC<SellScreenProps> = ({
                   {/* Stock Alert Badge & Quick Deselect (Cancel All) */}
                   <div className="flex items-center justify-between gap-1 mb-2">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-2xl">{product.image_emoji || '📦'}</span>
+                      {product.image_emoji ? (
+                        <span className="text-2xl">{product.image_emoji}</span>
+                      ) : (
+                        <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-800 border border-slate-200 flex items-center justify-center font-black text-xs shrink-0">
+                          {product.name.slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
                       {(cartItem || fractionalCartItems.length > 0) && (
                         <button
                           type="button"
@@ -1726,151 +1748,161 @@ export const SellScreen: React.FC<SellScreenProps> = ({
       )}
 
       {/* Fractional / Sub-Unit Portion Selection Sheet */}
-      {fractionalModalProduct && (
-        <Sheet
-          isOpen={true}
-          onClose={() => setFractionalModalProduct(null)}
-          title={isEn ? 'Select Portion & Price' : 'Chagua Kipimo na Bei'}
-          subtitle={`${fractionalModalProduct.image_emoji || '📦'} ${fractionalModalProduct.name} · ${isEn ? 'Full' : 'Nzima'}: ${formatKES(fractionalModalProduct.selling_price)} / ${fractionalModalProduct.unit}`}
-        >
-          <div className="space-y-4 select-none">
-            {/* Quick 1-Tap Preset Portions */}
-            <div className="space-y-2">
-              <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                {isEn ? 'Quick Portion Presets:' : 'Vipimo vya Haraka:'}
-              </label>
+      {fractionalModalProduct && (() => {
+        const availablePortions = (fractionalModalProduct.fractional_prices && fractionalModalProduct.fractional_prices.length > 0)
+          ? fractionalModalProduct.fractional_prices
+          : [
+              { qty: 0.25, price: toKES(Math.round(fractionalModalProduct.selling_price * 0.25)) },
+              { qty: 0.5, price: toKES(Math.round(fractionalModalProduct.selling_price * 0.5)) },
+              { qty: 0.75, price: toKES(Math.round(fractionalModalProduct.selling_price * 0.75)) },
+            ];
 
-              <div className="grid grid-cols-2 gap-2.5">
-                {fractionalModalProduct.fractional_prices?.map((fp, idx) => {
-                  const label = getFractionDisplay(fp.qty, fractionalModalProduct.unit);
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() =>
-                        addFractionalToCart(
-                          fractionalModalProduct,
-                          fp.qty,
-                          fp.price,
-                          label
-                        )
-                      }
-                      className="p-3.5 bg-emerald-50/80 hover:bg-emerald-100/80 active:scale-95 border-2 border-emerald-300 rounded-2xl flex flex-col items-start justify-between gap-2 text-left transition shadow-2xs cursor-pointer"
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
-                          <span className="w-5 h-5 rounded-md bg-emerald-600 text-white flex items-center justify-center text-[10px] font-black">
-                            {fp.qty === 0.25 ? '¼' : fp.qty === 0.5 ? '½' : fp.qty === 0.75 ? '¾' : '½'}
+        return (
+          <Sheet
+            isOpen={true}
+            onClose={() => setFractionalModalProduct(null)}
+            title={isEn ? 'Select Portion & Price' : 'Chagua Kipimo na Bei'}
+            subtitle={`${fractionalModalProduct.image_emoji ? fractionalModalProduct.image_emoji + ' ' : ''}${fractionalModalProduct.name} · ${isEn ? 'Full' : 'Nzima'}: ${formatKES(fractionalModalProduct.selling_price)} / ${fractionalModalProduct.unit}`}
+          >
+            <div className="space-y-4 select-none">
+              {/* Quick 1-Tap Preset Portions */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                  {isEn ? 'Quick Portion Presets:' : 'Vipimo vya Haraka:'}
+                </label>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  {availablePortions.map((fp, idx) => {
+                    const label = getFractionDisplay(fp.qty, fractionalModalProduct.unit);
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() =>
+                          addFractionalToCart(
+                            fractionalModalProduct,
+                            fp.qty,
+                            fp.price,
+                            label
+                          )
+                        }
+                        className="p-3.5 bg-emerald-50/80 hover:bg-emerald-100/80 active:scale-95 border-2 border-emerald-300 rounded-2xl flex flex-col items-start justify-between gap-2 text-left transition shadow-2xs cursor-pointer"
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
+                            <span className="w-5 h-5 rounded-md bg-emerald-600 text-white flex items-center justify-center text-[10px] font-black">
+                              {fp.qty === 0.25 ? '¼' : fp.qty === 0.5 ? '½' : fp.qty === 0.75 ? '¾' : '½'}
+                            </span>
+                            <span>{label}</span>
                           </span>
-                          <span>{label}</span>
-                        </span>
-                      </div>
-                      <div className="text-base font-black text-emerald-800 tabular-nums">
-                        {formatKES(fp.price)}
-                      </div>
-                    </button>
-                  );
-                })}
+                        </div>
+                        <div className="text-base font-black text-emerald-800 tabular-nums">
+                          {formatKES(fp.price)}
+                        </div>
+                      </button>
+                    );
+                  })}
 
-                {/* 1 Whole Unit option */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    addToCart(fractionalModalProduct);
-                    setFractionalModalProduct(null);
-                  }}
-                  className="p-3.5 bg-slate-50 hover:bg-slate-100 active:scale-95 border-2 border-slate-300 rounded-2xl flex flex-col items-start justify-between gap-2 text-left transition shadow-2xs cursor-pointer"
-                >
-                  <div className="flex items-center justify-between w-full">
-                    <span className="text-xs font-black text-slate-900 flex items-center gap-1.5">
-                      <span className="w-5 h-5 rounded-md bg-slate-700 text-white flex items-center justify-center text-[10px] font-black">
-                        1
-                      </span>
-                      <span>1.0 {fractionalModalProduct.unit} ({isEn ? 'Full Unit' : 'Nzima'})</span>
-                    </span>
-                  </div>
-                  <div className="text-base font-black text-slate-900 tabular-nums">
-                    {formatKES(fractionalModalProduct.selling_price)}
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            {/* Custom Decimal Portion & Price Section */}
-            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-                  <Scale className="w-4 h-4 text-emerald-600" />
-                  <span>{isEn ? 'Or Enter Custom Quantity & Price:' : 'Au Weka Kipimo na Bei Yoyote:'}</span>
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                    {isEn ? `Quantity (${fractionalModalProduct.unit}):` : `Idadi (${fractionalModalProduct.unit}):`}
-                  </label>
-                  <input
-                    type="number"
-                    step="0.05"
-                    min="0.01"
-                    value={customFractionQtyStr}
-                    onChange={(e) => {
-                      const qStr = e.target.value;
-                      setCustomFractionQtyStr(qStr);
-                      const qNum = Number(qStr);
-                      if (qNum > 0) {
-                        setCustomFractionPriceStr(
-                          String(Math.round(fractionalModalProduct.selling_price * qNum))
-                        );
-                      }
+                  {/* 1 Whole Unit option */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      addToCart(fractionalModalProduct);
+                      setFractionalModalProduct(null);
                     }}
-                    placeholder="0.5"
-                    className="w-full h-11 px-3 text-sm font-black bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                    {isEn ? 'Total Price (KES):' : 'Bei ya Kuuza (KES):'}
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={customFractionPriceStr}
-                    onChange={(e) => setCustomFractionPriceStr(e.target.value)}
-                    placeholder="KES"
-                    className="w-full h-11 px-3 text-sm font-black text-emerald-800 bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-emerald-500"
-                  />
+                    className="p-3.5 bg-slate-50 hover:bg-slate-100 active:scale-95 border-2 border-slate-300 rounded-2xl flex flex-col items-start justify-between gap-2 text-left transition shadow-2xs cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="text-xs font-black text-slate-900 flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-md bg-slate-700 text-white flex items-center justify-center text-[10px] font-black">
+                          1
+                        </span>
+                        <span>1.0 {fractionalModalProduct.unit} ({isEn ? 'Full Unit' : 'Nzima'})</span>
+                      </span>
+                    </div>
+                    <div className="text-base font-black text-slate-900 tabular-nums">
+                      {formatKES(fractionalModalProduct.selling_price)}
+                    </div>
+                  </button>
                 </div>
               </div>
 
-              <Button
-                variant="gradient"
-                size="md"
-                fullWidth
-                disabled={
-                  !customFractionQtyStr ||
-                  Number(customFractionQtyStr) <= 0 ||
-                  !customFractionPriceStr ||
-                  Number(customFractionPriceStr) <= 0
-                }
-                onClick={() => {
-                  const q = Number(customFractionQtyStr);
-                  const p = toKES(Number(customFractionPriceStr));
-                  const label = `${q} ${fractionalModalProduct.unit}`;
-                  addFractionalToCart(fractionalModalProduct, q, p, label);
-                }}
-              >
-                <Check className="w-4 h-4 mr-1.5" />
-                {isEn
-                  ? `Add ${customFractionQtyStr || 0} ${fractionalModalProduct.unit} for KES ${customFractionPriceStr || 0}`
-                  : `Weka ${customFractionQtyStr || 0} ${fractionalModalProduct.unit} kwa KES ${customFractionPriceStr || 0}`}
-              </Button>
+              {/* Custom Decimal Portion & Price Section */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                    <Scale className="w-4 h-4 text-emerald-600" />
+                    <span>{isEn ? 'Or Enter Custom Quantity & Price:' : 'Au Weka Kipimo na Bei Yoyote:'}</span>
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                      {isEn ? `Quantity (${fractionalModalProduct.unit}):` : `Idadi (${fractionalModalProduct.unit}):`}
+                    </label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.01"
+                      value={customFractionQtyStr}
+                      onChange={(e) => {
+                        const qStr = e.target.value;
+                        setCustomFractionQtyStr(qStr);
+                        const qNum = Number(qStr);
+                        if (qNum > 0) {
+                          setCustomFractionPriceStr(
+                            String(Math.round(fractionalModalProduct.selling_price * qNum))
+                          );
+                        }
+                      }}
+                      placeholder="0.5"
+                      className="w-full h-11 px-3 text-sm font-black bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                      {isEn ? 'Total Price (KES):' : 'Bei ya Kuuza (KES):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={customFractionPriceStr}
+                      onChange={(e) => setCustomFractionPriceStr(e.target.value)}
+                      placeholder="KES"
+                      className="w-full h-11 px-3 text-sm font-black text-emerald-800 bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  variant="gradient"
+                  size="md"
+                  fullWidth
+                  disabled={
+                    !customFractionQtyStr ||
+                    Number(customFractionQtyStr) <= 0 ||
+                    !customFractionPriceStr ||
+                    Number(customFractionPriceStr) <= 0
+                  }
+                  onClick={() => {
+                    const q = Number(customFractionQtyStr);
+                    const p = toKES(Number(customFractionPriceStr));
+                    const label = `${q} ${fractionalModalProduct.unit}`;
+                    addFractionalToCart(fractionalModalProduct, q, p, label);
+                  }}
+                >
+                  <Check className="w-4 h-4 mr-1.5" />
+                  {isEn
+                    ? `Add ${customFractionQtyStr || 0} ${fractionalModalProduct.unit} for KES ${customFractionPriceStr || 0}`
+                    : `Weka ${customFractionQtyStr || 0} ${fractionalModalProduct.unit} kwa KES ${customFractionPriceStr || 0}`}
+                </Button>
+              </div>
             </div>
-          </div>
-        </Sheet>
-      )}
+          </Sheet>
+        );
+      })()}
     </div>
   );
 };

@@ -1517,7 +1517,7 @@ export async function recordCustomerDebtPayment(data: {
       if (amountLeftToApply <= 0) break;
 
       const debtRemaining = subKES(debt.principal, debt.amount_paid);
-      const paymentForThisDebt = Math.min(amountLeftToApply, debtRemaining);
+      const paymentForThisDebt = toKES(Math.min(amountLeftToApply, debtRemaining));
 
       const newAmountPaid = addKES(debt.amount_paid, paymentForThisDebt);
       const newBalance = subKES(debt.principal, newAmountPaid);
@@ -1567,7 +1567,7 @@ export async function recordCustomerDebtPayment(data: {
         }
       );
 
-      amountLeftToApply -= paymentForThisDebt;
+      amountLeftToApply = subKES(amountLeftToApply, paymentForThisDebt);
       totalPaid = addKES(totalPaid, paymentForThisDebt);
     }
   });

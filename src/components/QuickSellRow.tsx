@@ -83,7 +83,13 @@ export const QuickSellRow: React.FC<QuickSellRowProps> = ({
               ) : null}
 
               <div className="flex items-center gap-1.5 pr-3">
-                <span className="text-base leading-none shrink-0">{p.image_emoji || '📦'}</span>
+                {p.image_emoji ? (
+                  <span className="text-base leading-none shrink-0">{p.image_emoji}</span>
+                ) : (
+                  <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-700 font-black text-[10px] flex items-center justify-center border border-slate-200 shrink-0">
+                    {p.name.slice(0, 2).toUpperCase()}
+                  </span>
+                )}
                 <span className="text-xs font-bold text-slate-800 line-clamp-2 leading-tight">
                   {p.name}
                 </span>

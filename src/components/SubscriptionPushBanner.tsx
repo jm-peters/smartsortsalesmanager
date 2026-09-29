@@ -1,5 +1,5 @@
-import React from 'react';
-import { CreditCard, Zap, Clock, ShieldAlert, ArrowRight, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { CreditCard, Zap, ShieldAlert, Check, X, Phone, ArrowRight } from 'lucide-react';
 import type { ShopMeta } from '../lib/db/local';
 import type { Language } from '../lib/i18n';
 
@@ -14,7 +14,7 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
   language,
   onOpenPaymentModal,
 }) => {
-  const [dismissed, setDismissed] = React.useState(false);
+  const [dismissed, setDismissed] = useState(false);
 
   if (!shop || dismissed) return null;
 
@@ -27,67 +27,74 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
   const msRemaining = paidUntilMs - now;
   const hoursRemaining = msRemaining / (1000 * 60 * 60);
 
-  // Check if daily or weekly plan
-  const isWeekly = shop.plan_code?.includes('weekly') || shop.plan_name?.toLowerCase().includes('week');
+  // Expired or expiring within 16 hours
   const isExpired = msRemaining <= 0;
-  // Daily triggers if expired or expiring within 12 hours. Weekly triggers when ending (<24h)
-  const isDueSoon = isWeekly ? hoursRemaining <= 24 : hoursRemaining <= 12;
+  const isDueSoon = hoursRemaining <= 16;
 
   if (!isExpired && !isDueSoon) return null;
 
-  const amount = isWeekly ? 180 : 30;
-  const periodLabel = isWeekly ? (isEn ? 'Weekly' : 'Wiki') : (isEn ? 'Daily' : 'Kila Siku');
+  const registeredPhone = (shop.phone || shop.alt_phone || '').trim();
 
   return (
-    <div className="mx-3 my-2 p-3 rounded-2xl bg-gradient-to-r from-amber-500 via-emerald-600 to-teal-700 text-white shadow-lg animate-in slide-in-from-top-2 duration-300">
+    <div className="mx-3 my-2 p-3.5 rounded-2xl bg-gradient-to-r from-slate-900 via-emerald-950 to-teal-900 text-white border border-emerald-500/40 shadow-xl animate-in slide-in-from-top-2 duration-300">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-xs flex items-center justify-center shrink-0 mt-0.5">
+        <div className="flex items-start gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0 mt-0.5">
             {isExpired ? (
-              <ShieldAlert className="w-5 h-5 text-amber-200" />
+              <ShieldAlert className="w-5 h-5 text-amber-300" />
             ) : (
-              <Zap className="w-5 h-5 text-emerald-200 animate-pulse" />
+              <Zap className="w-5 h-5 text-emerald-300 animate-pulse" />
             )}
           </div>
-          <div>
+
+          <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-xs font-black uppercase tracking-wider bg-black/20 px-2 py-0.5 rounded-md">
-                {periodLabel} {isEn ? 'Subscription Due' : 'Ada Inahitajika'}
+              <span className="text-xs font-black uppercase tracking-wider bg-emerald-800/80 px-2 py-0.5 rounded-md border border-emerald-500/40">
+                {isEn ? 'Daily Duka Access Due' : 'Ada ya Kila Siku Inahitajika'}
               </span>
-              <span className="text-xs font-black text-amber-200">
-                KES {amount}
+              <span className="text-xs font-black text-amber-300">
+                KES 30 / day
               </span>
             </div>
-            <p className="text-[11px] text-white/90 mt-0.5 leading-snug">
+
+            <p className="text-[11.5px] text-slate-200 leading-snug">
               {isExpired
                 ? (isEn
-                    ? 'Your daily shop access is due today. Renew instantly to keep selling and sync uninterrupted.'
-                    : 'Ada ya leo ya duka inahitajika. Lipa sasa ili uendelee kuuza bila kukatizwa.')
+                    ? 'Your daily shop access is due. Pay to Paybill: 247247, Acc: 253499 with your registered number.'
+                    : 'Ada ya duka ya leo inahitajika. Lipa kwa Paybill: 247247, Akaunti: 253499 kwa namba yako ya simu.')
                 : (isEn
-                    ? `Your ${periodLabel.toLowerCase()} access expires in ${Math.max(1, Math.round(hoursRemaining))} hours.`
-                    : `Ada yako ya ${periodLabel.toLowerCase()} inaisha baada ya saa ${Math.max(1, Math.round(hoursRemaining))}.`)}
+                    ? `Your shop access expires in ${Math.max(1, Math.round(hoursRemaining))} hours. Pay KES 30 to Equity Till (Paybill: 247247, Acc: 253499).`
+                    : `Ada ya duka inaisha baada ya saa ${Math.max(1, Math.round(hoursRemaining))}. Lipa KES 30 kwa Paybill: 247247, Akaunti: 253499.`)}
             </p>
+
+            {registeredPhone && (
+              <div className="text-[10px] text-emerald-300 font-medium flex items-center gap-1">
+                <Phone className="w-3 h-3" />
+                <span>{isEn ? 'Pay from registered phone: ' : 'Lipa kwa simu iliyosajiliwa: '}<strong>{registeredPhone}</strong></span>
+              </div>
+            )}
           </div>
         </div>
 
         <button
           type="button"
           onClick={() => setDismissed(true)}
-          className="p-1 text-white/60 hover:text-white rounded-lg transition shrink-0"
+          className="p-1 text-slate-400 hover:text-white rounded-lg transition shrink-0 cursor-pointer"
           title={isEn ? 'Dismiss' : 'Funga'}
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      <div className="mt-2.5 flex items-center justify-end gap-2 pt-1 border-t border-white/20">
+      {/* Action Button: I Have Paid */}
+      <div className="mt-3 flex items-center justify-end gap-2 pt-2 border-t border-emerald-700/30">
         <button
           type="button"
           onClick={onOpenPaymentModal}
-          className="px-4 py-1.5 bg-white hover:bg-emerald-50 text-emerald-900 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md active:scale-95 transition cursor-pointer"
+          className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md active:scale-95 transition cursor-pointer"
         >
-          <span>{isEn ? `Pay KES ${amount} (M-Pesa STK)` : `Lipa KES ${amount} (M-Pesa)`}</span>
-          <ArrowRight className="w-3.5 h-3.5" />
+          <Check className="w-3.5 h-3.5 stroke-[3]" />
+          <span>{isEn ? 'I Have Paid (Record Access)' : 'Nimelipa (Washa Huduma)'}</span>
         </button>
       </div>
     </div>

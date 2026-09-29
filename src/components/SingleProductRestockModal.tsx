@@ -144,7 +144,13 @@ export const SingleProductRestockModal: React.FC<SingleProductRestockModalProps>
         {/* Product Snapshot Header */}
         <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-3xl">{product.image_emoji || '📦'}</span>
+            {product.image_emoji ? (
+              <span className="text-3xl">{product.image_emoji}</span>
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-800 border border-slate-200 flex items-center justify-center font-black text-sm shrink-0">
+                {product.name.slice(0, 2).toUpperCase()}
+              </div>
+            )}
             <div>
               <div className="font-bold text-sm text-slate-900">{product.name}</div>
               <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">

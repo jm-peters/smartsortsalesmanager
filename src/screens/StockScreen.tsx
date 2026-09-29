@@ -91,7 +91,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   const [unit, setUnit] = useState('pcs');
   const [lowLimitStr, setLowLimitStr] = useState('5');
   const [packSizeStr, setPackSizeStr] = useState('');
-  const [emoji, setEmoji] = useState('📦');
+  const [emoji, setEmoji] = useState('');
 
   // Fractional Prices (e.g. Sugar, Rice, Cooking Oil quarter & half quantities)
   const [enableFractional, setEnableFractional] = useState(false);
@@ -198,7 +198,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setUnit(u);
     setLowLimitStr('5');
     setPackSizeStr('');
-    setEmoji(template?.emoji || '📦');
+    setEmoji(template?.emoji || '');
 
     if (template?.fractionalPrices && template.fractionalPrices.length > 0) {
       setEnableFractional(true);
@@ -243,7 +243,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setUnit(p.unit);
     setLowLimitStr(String(p.low_limit));
     setPackSizeStr(p.pack_size ? String(p.pack_size) : '');
-    setEmoji(p.image_emoji || '📦');
+    setEmoji(p.image_emoji || '');
 
     if (p.fractional_prices && p.fractional_prices.length > 0) {
       setEnableFractional(true);
@@ -743,7 +743,13 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                   className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50 transition"
                 >
                   <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <span className="text-2xl flex-shrink-0">{p.image_emoji || '📦'}</span>
+                    {p.image_emoji ? (
+                      <span className="text-2xl flex-shrink-0">{p.image_emoji}</span>
+                    ) : (
+                      <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center justify-center font-black text-xs shrink-0 shadow-2xs">
+                        {p.name.slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <div className="font-bold text-sm text-slate-900 truncate">
                         {p.name}
@@ -839,15 +845,28 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         <div className="space-y-4 select-none">
           {/* Name & Emoji */}
           <div className="flex gap-2">
-            <div className="w-16">
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                {isEn ? 'Emoji' : 'Picha'}
-              </label>
+            <div className="w-20">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[11px] font-bold text-slate-600">
+                  {isEn ? 'Emoji' : 'Picha'}
+                </label>
+                {emoji && (
+                  <button
+                    type="button"
+                    onClick={() => setEmoji('')}
+                    className="text-[9px] text-slate-400 hover:text-rose-600 font-bold"
+                    title={isEn ? 'No emoji' : 'Bila emoji'}
+                  >
+                    {isEn ? 'Clear' : 'Ondoa'}
+                  </button>
+                )}
+              </div>
               <input
                 type="text"
                 value={emoji}
                 onChange={(e) => setEmoji(e.target.value)}
-                className="w-full h-11 text-center text-xl bg-slate-50 border border-slate-300 rounded-xl"
+                placeholder={isEn ? 'None' : 'Bila'}
+                className="w-full h-11 text-center text-xl bg-slate-50 border border-slate-300 rounded-xl placeholder:text-xs placeholder:font-normal"
               />
             </div>
             <div className="flex-1">
