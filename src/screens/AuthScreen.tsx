@@ -2498,8 +2498,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       />
                       <span className="text-[10px] text-slate-400 block text-center mt-1">
                         {language === 'en'
-                          ? `Code sent to ${email}. Use 2540 as the simulation code if testing offline.`
-                          : `Msimbo umetumwa kwa ${email}. Tumia 2540 kama msimbo wa majaribio ukiwa nje ya mtandao.`}
+                          ? `Verification code has been sent to ${email}.`
+                          : `Msimbo wa uthibitishaji umetumwa kwa ${email}.`}
                       </span>
                     </div>
 

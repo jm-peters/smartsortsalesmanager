@@ -196,6 +196,43 @@ class SyncEngine {
     void this.updateCounts();
     this.startPeriodicSync();
     this.startConnectivityWatchInterval();
+    this.startAutoHealingSweep();
+
+    // Trigger initial background sync on app load
+    setTimeout(() => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        void this.triggerSync();
+      }
+    }, 1000);
+  }
+
+  /**
+   * Continuous background self-healing sweep (runs every 60s).
+   * Automatically heals, sanitizes, and cleans any dead or stuck outbox entries
+   * safely in local metadata without affecting Supabase.
+   */
+  private startAutoHealingSweep() {
+    setInterval(async () => {
+      try {
+        const isOnlineNow = typeof navigator !== 'undefined' ? navigator.onLine : true;
+        if (!isOnlineNow) return;
+
+        // Auto-heal dead letters if any exist
+        const deadCount = await db.outbox.where('attempts').aboveOrEqual(10).count();
+        if (deadCount > 0) {
+          await this.autoHealDeadLetters();
+        }
+
+        // Flush any pending queue
+        await this.updateCounts();
+        if (this.currentStatus.unpushedCount > 0 && !this.isSyncing) {
+          await this.resetOutboxBackoffOnReconnect();
+          void this.triggerSync();
+        }
+      } catch {
+        // silent safe fallback
+      }
+    }, 60_000);
   }
 
   /**
@@ -233,10 +270,10 @@ class SyncEngine {
   private startPeriodicSync() {
     if (this.syncTimer) clearInterval(this.syncTimer);
 
-    let interval = 30_000;
+    let interval = 20_000; // Fast 20s background sync
     const conn = (navigator as any).connection;
     if (conn && (conn.saveData || conn.effectiveType === '2g')) {
-      interval = 180_000; // 3 min interval on slow/data-saver connections
+      interval = 120_000; // 2 min interval on slow/data-saver connections
     }
 
     this.syncTimer = setInterval(() => {

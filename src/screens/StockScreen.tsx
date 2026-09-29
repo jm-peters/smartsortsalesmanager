@@ -41,6 +41,7 @@ import { Sheet } from '../components/Sheet';
 import { RestockListModal } from '../components/RestockListModal';
 import { SingleProductRestockModal } from '../components/SingleProductRestockModal';
 import { FirstProductGuide, type ProductStarterTemplate } from '../components/FirstProductGuide';
+import { getRelevantEmoji, POPULAR_RETAIL_EMOJIS } from '../lib/emojiHelper';
 import { translations, type Language } from '../lib/i18n';
 
 interface StockScreenProps {
@@ -189,7 +190,8 @@ export const StockScreen: React.FC<StockScreenProps> = ({
 
   const openAddModal = (template?: ProductStarterTemplate) => {
     setEditingProduct(null);
-    setName(template?.name || '');
+    const initialName = template?.name || '';
+    setName(initialName);
     setBuyingPriceStr(template?.buyingPrice ? String(template.buyingPrice) : '');
     const sellPrice = template?.sellingPrice ? String(template.sellingPrice) : '';
     setSellingPriceStr(sellPrice);
@@ -198,7 +200,8 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setUnit(u);
     setLowLimitStr('5');
     setPackSizeStr('');
-    setEmoji(template?.emoji || '');
+    const defaultEmoji = template?.emoji || (initialName ? getRelevantEmoji(initialName, u) : '');
+    setEmoji(defaultEmoji);
 
     if (template?.fractionalPrices && template.fractionalPrices.length > 0) {
       setEnableFractional(true);
@@ -844,42 +847,106 @@ export const StockScreen: React.FC<StockScreenProps> = ({
       >
         <div className="space-y-4 select-none">
           {/* Name & Emoji */}
-          <div className="flex gap-2">
-            <div className="w-20">
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-[11px] font-bold text-slate-600">
-                  {isEn ? 'Emoji' : 'Picha'}
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <div className="w-20">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-bold text-slate-600">
+                    {isEn ? 'Emoji' : 'Picha'}
+                  </label>
+                  {emoji && (
+                    <button
+                      type="button"
+                      onClick={() => setEmoji('')}
+                      className="text-[9px] text-slate-400 hover:text-rose-600 font-bold"
+                      title={isEn ? 'No emoji' : 'Bila emoji'}
+                    >
+                      {isEn ? 'Clear' : 'Ondoa'}
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={emoji}
+                  onChange={(e) => setEmoji(e.target.value)}
+                  placeholder={isEn ? 'None' : 'Bila'}
+                  className="w-full h-11 text-center text-xl bg-slate-50 border border-slate-300 rounded-xl placeholder:text-xs placeholder:font-normal"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                  {isEn ? 'Product Name:' : 'Jina la Bidhaa:'} <span className="text-emerald-600 font-bold">*</span>
                 </label>
-                {emoji && (
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setName(val);
+                    if (!editingProduct) {
+                      const prevSuggested = getRelevantEmoji(name, unit);
+                      const newSuggested = getRelevantEmoji(val, unit);
+                      if (newSuggested && (!emoji || emoji === prevSuggested)) {
+                        setEmoji(newSuggested);
+                      }
+                    }
+                  }}
+                  placeholder={isEn ? 'e.g. Sugar 1kg, Milk 500ml...' : 'Mfano: Sukari 1kg, Maziwa 500ml...'}
+                  className="w-full h-11 px-3 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500 font-medium"
+                />
+              </div>
+            </div>
+
+            {/* Quick Emoji Relevancy Suggestions & Flexibility Bar */}
+            <div className="p-2 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-slate-500 font-bold">
+                  {isEn ? 'Suggested & Quick Emojis:' : 'Emoji Zinazofaa & Haraka:'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setEmoji('')}
+                  className={`px-2 py-0.5 rounded text-[9px] font-bold transition cursor-pointer ${
+                    !emoji
+                      ? 'bg-slate-800 text-white font-black'
+                      : 'bg-white text-slate-600 border border-slate-300 hover:bg-slate-100'
+                  }`}
+                >
+                  {isEn ? 'No Emoji' : 'Bila Emoji'}
+                </button>
+              </div>
+
+              {/* Quick Emojis Horizontal Strip */}
+              <div className="flex items-center gap-1 overflow-x-auto pb-1 text-sm no-scrollbar">
+                {getRelevantEmoji(name, unit) && (
                   <button
                     type="button"
-                    onClick={() => setEmoji('')}
-                    className="text-[9px] text-slate-400 hover:text-rose-600 font-bold"
-                    title={isEn ? 'No emoji' : 'Bila emoji'}
+                    onClick={() => setEmoji(getRelevantEmoji(name, unit))}
+                    className={`px-2 py-1 rounded-lg text-xs font-bold border transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                      emoji === getRelevantEmoji(name, unit)
+                        ? 'bg-emerald-100 border-emerald-400 text-emerald-950 font-black'
+                        : 'bg-white border-slate-200 hover:bg-emerald-50'
+                    }`}
                   >
-                    {isEn ? 'Clear' : 'Ondoa'}
+                    <span>{getRelevantEmoji(name, unit)}</span>
+                    <span className="text-[9px] text-emerald-800">{isEn ? 'Auto' : 'Sahihi'}</span>
                   </button>
                 )}
+                {POPULAR_RETAIL_EMOJIS.slice(0, 16).map((em) => (
+                  <button
+                    key={em}
+                    type="button"
+                    onClick={() => setEmoji(em)}
+                    className={`w-7 h-7 rounded-lg text-sm flex items-center justify-center transition cursor-pointer shrink-0 ${
+                      emoji === em
+                        ? 'bg-emerald-600 text-white ring-2 ring-emerald-400 scale-105'
+                        : 'bg-white border border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    {em}
+                  </button>
+                ))}
               </div>
-              <input
-                type="text"
-                value={emoji}
-                onChange={(e) => setEmoji(e.target.value)}
-                placeholder={isEn ? 'None' : 'Bila'}
-                className="w-full h-11 text-center text-xl bg-slate-50 border border-slate-300 rounded-xl placeholder:text-xs placeholder:font-normal"
-              />
-            </div>
-            <div className="flex-1">
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                {isEn ? 'Product Name:' : 'Jina la Bidhaa:'}
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={isEn ? 'e.g. Sugar 1kg...' : 'Mfano: Sukari 1kg...'}
-                className="w-full h-11 px-3 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500"
-              />
             </div>
           </div>
 

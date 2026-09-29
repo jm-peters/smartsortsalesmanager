@@ -22,14 +22,27 @@ import {
   Trash2,
   AlertTriangle,
   Fingerprint,
+  Clock,
+  CheckCircle2,
+  MessageSquare,
+  Sparkles,
 } from 'lucide-react';
 import {
   db,
+  getShopMeta,
   saveShopMeta,
   getShopUser,
   saveShopUser,
   type UserRole,
 } from '../lib/db/local';
+import {
+  getAllLoanApplications,
+  updateLoanApplicationStatus,
+  getAllEligibleShopAlerts,
+  adminGrantLimitToShop,
+  type LoanApplication,
+  type EligibleShopAlert,
+} from '../lib/loans';
 import { syncEngine, type SyncStatus } from '../lib/sync/engine';
 import { Button } from '../components/Button';
 import { Sheet } from '../components/Sheet';
@@ -94,6 +107,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [realExpenseCount, setRealExpenseCount] = useState(0);
   const [realAuditLogCount, setRealAuditLogCount] = useState(0);
   const [latestAuditLogs, setLatestAuditLogs] = useState<any[]>([]);
+  const [adminLoanApps, setAdminLoanApps] = useState<LoanApplication[]>(() => getAllLoanApplications());
+  const [adminEligibleAlerts, setAdminEligibleAlerts] = useState<EligibleShopAlert[]>(() => getAllEligibleShopAlerts());
   const [loadTrigger, setLoadTrigger] = useState(0);
 
   // PIN Change Sheet
@@ -242,7 +257,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       }
       setLoadTrigger(prev => prev + 1);
       if (typeof window !== 'undefined') {
-        window.alert('Successfully seeded 5 premium Kenyan retail items to your local inventory! Go to Sales tab to test selling!');
+        window.alert('Successfully populated catalog items to your local inventory! Go to Sales tab to start selling.');
       }
     } catch (err: any) {
       if (typeof window !== 'undefined') {
@@ -570,6 +585,163 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   <span className="text-xs font-black text-blue-400 tabular-nums">{realAuditLogCount} entries</span>
                 </div>
               </div>
+            </div>
+
+            {/* Restocking Loan Applications Portal Queue */}
+            <div className="space-y-2 border-t border-slate-800 pt-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-[10px] font-black uppercase text-amber-400 tracking-wide flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>RESTOCKING LOAN APPLICATIONS ({adminLoanApps.length})</span>
+                </h4>
+                <span className="text-[9px] text-slate-400">Merchant Financing Desk</span>
+              </div>
+
+              {adminLoanApps.length === 0 ? (
+                <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 text-[10px] text-slate-400 text-center">
+                  No merchant restocking loan applications in queue.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {adminLoanApps.map((app) => {
+                    const isPending = app.status === 'pending_review';
+                    return (
+                      <div
+                        key={app.id}
+                        className={`p-2.5 rounded-xl border text-xs space-y-2 ${
+                          isPending
+                            ? 'bg-slate-900 border-amber-500/70'
+                            : app.status === 'disbursed'
+                            ? 'bg-slate-900/60 border-emerald-600/50'
+                            : 'bg-slate-900/40 border-slate-800 opacity-70'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <div className="font-bold text-white flex items-center gap-1.5">
+                              <span>{app.shop_name}</span>
+                              <span
+                                className={`text-[8px] px-1.5 py-0.2 rounded font-black uppercase ${
+                                  isPending
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                    : app.status === 'disbursed'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                }`}
+                              >
+                                {app.status === 'pending_review' ? 'Pending Review (24h)' : app.status}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {app.owner_name} • {app.phone} • {app.town || 'N/A'}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <span className="font-black text-amber-400 text-sm tabular-nums">
+                              KES {app.amount.toLocaleString()}
+                            </span>
+                            <div className="text-[9px] text-slate-400">{app.duration_days} Days Term</div>
+                          </div>
+                        </div>
+
+                        <div className="p-1.5 bg-slate-950 rounded-lg text-[10px] text-slate-300 flex justify-between border border-slate-800">
+                          <span>Instalments: <strong className="text-emerald-400">{app.instalment_breakdown || app.repayment_plan_desc}</strong></span>
+                          <span>Today: KES {app.daily_sales_kes.toLocaleString()}</span>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-1.5 pt-0.5">
+                          {isPending && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await updateLoanApplicationStatus(app.id, 'disbursed', 'Approved via Settings Admin');
+                                  setAdminLoanApps(getAllLoanApplications());
+                                  alert(`Loan of KES ${app.amount.toLocaleString()} for ${app.shop_name} approved and disbursed!`);
+                                }}
+                                className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[9px] font-black transition active:scale-95 cursor-pointer flex items-center justify-center gap-1"
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>Approve & Disburse</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await updateLoanApplicationStatus(app.id, 'rejected', 'Declined via Settings Admin');
+                                  setAdminLoanApps(getAllLoanApplications());
+                                  alert(`Loan for ${app.shop_name} declined.`);
+                                }}
+                                className="px-2 py-1 bg-rose-600/80 hover:bg-rose-700 text-white rounded text-[9px] font-bold transition active:scale-95 cursor-pointer"
+                              >
+                                Decline
+                              </button>
+                            </>
+                          )}
+                          <a
+                            href={`https://wa.me/${(app.phone || '0712345678').replace(/\+/g, '').replace(/^0/, '254')}?text=${encodeURIComponent(
+                              `Hello ${app.owner_name}, regarding your SmartSort Restock Loan application for ${app.shop_name} of KES ${app.amount.toLocaleString()}...`
+                            )}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2 py-1 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded text-[9px] font-bold flex items-center gap-1 cursor-pointer transition"
+                          >
+                            <MessageSquare className="w-3 h-3" />
+                            <span>WhatsApp</span>
+                          </a>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 3-Month Operational Eligible Shops Section */}
+            <div className="space-y-2 border-t border-slate-800 pt-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-[10px] font-black uppercase text-emerald-400 tracking-wide flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>3+ MONTHS OPERATIONAL ELIGIBLE SHOPS ({adminEligibleAlerts.length})</span>
+                </h4>
+                <span className="text-[9px] text-slate-400">Admin Milestone Detection</span>
+              </div>
+
+              {adminEligibleAlerts.length === 0 ? (
+                <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 text-[10px] text-slate-400 text-center">
+                  No shops currently flagged for 3+ months operational milestone.
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-52 overflow-y-auto">
+                  {adminEligibleAlerts.map((alertItem) => (
+                    <div
+                      key={alertItem.id}
+                      className="p-2 bg-slate-900 border border-emerald-500/40 rounded-xl text-xs space-y-1"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white text-[11px]">{alertItem.shop_name} ({alertItem.town})</span>
+                        <span className="text-[9px] text-emerald-300 font-mono bg-emerald-950 px-1.5 py-0.2 rounded border border-emerald-700">
+                          {alertItem.days_active} Days Active
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px]">
+                        <span className="text-slate-400">Recommended Limit: <strong className="text-amber-400">KES {alertItem.calculated_limit.toLocaleString()}</strong></span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await adminGrantLimitToShop(alertItem.shop_id, alertItem.calculated_limit);
+                            setAdminEligibleAlerts(getAllEligibleShopAlerts());
+                            alert(`Credit limit of KES ${alertItem.calculated_limit.toLocaleString()} awarded to ${alertItem.shop_name}!`);
+                          }}
+                          className="px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[9px] transition cursor-pointer"
+                        >
+                          Grant Limit
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Admin Actions Utility Center */}

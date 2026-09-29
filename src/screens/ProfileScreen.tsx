@@ -20,6 +20,10 @@ import {
   Calendar,
   Trash2,
   UserMinus,
+  Send,
+  MessageSquare,
+  PhoneCall,
+  Clock,
 } from 'lucide-react';
 import {
   db,
@@ -34,6 +38,16 @@ import {
   type ShopUser,
   type StaffAttendant,
 } from '../lib/db/local';
+import {
+  submitLoanApplication,
+  getAllLoanApplications,
+  updateLoanApplicationStatus,
+  checkAndRegisterShopEligibility,
+  getAllEligibleShopAlerts,
+  adminGrantLimitToShop,
+  type LoanApplication,
+  type EligibleShopAlert,
+} from '../lib/loans';
 import { translations, type Language } from '../lib/i18n';
 import { EmojiPickerModal } from '../components/EmojiPickerModal';
 import { ProfileStepModal, type StepType } from '../components/ProfileStepModal';
@@ -142,6 +156,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   // Admin & Instalments
   const [isAdminMode, setIsAdminMode] = useState(false);
+  const [loanApplications, setLoanApplications] = useState<LoanApplication[]>(() => getAllLoanApplications());
+  const [eligibleAlerts, setEligibleAlerts] = useState<EligibleShopAlert[]>(() => getAllEligibleShopAlerts());
   const [copyrightTaps, setCopyrightTaps] = useState(0);
   const [instalmentAmount, setInstalmentAmount] = useState<string>('');
   const [isPayingInstalment, setIsPayingInstalment] = useState(false);
@@ -230,7 +246,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         const attendants = await getStaffAttendants();
         setStaffList(attendants);
 
-        // System Auto-Evaluation of credit limit based on activity
+        // System Auto-Evaluation of credit limit based on activity & 3-month eligibility tracking
         let awardedLimit = 0;
         const isThreeMonths = shop.simulate_three_months_active || (shop.created_at ? (Date.now() - new Date(shop.created_at).getTime() >= 90 * 24 * 60 * 60 * 1000) : false);
 
@@ -240,7 +256,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           } else if (todaySum >= 100 || weekSum >= 500) {
             awardedLimit = 5000;
           }
+          // Quietly register eligible shop milestone for the admin portal
+          await checkAndRegisterShopEligibility(shop, todaySum, weekSum);
+          setEligibleAlerts(getAllEligibleShopAlerts());
         }
+
+        setLoanApplications(getAllLoanApplications());
 
         const currentLimit = shop.loan_limit ?? 0;
         if (awardedLimit !== currentLimit && !shop.manual_limit_set) {
@@ -252,6 +273,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       }
     }
     loadStats();
+
+    const handleLoanAppsChanged = () => {
+      setLoanApplications(getAllLoanApplications());
+      setEligibleAlerts(getAllEligibleShopAlerts());
+    };
+    window.addEventListener('smartsort_loan_apps_changed', handleLoanAppsChanged);
+    return () => {
+      window.removeEventListener('smartsort_loan_apps_changed', handleLoanAppsChanged);
+    };
   }, [shop, todaySalesKES, weekSalesKES]);
 
   // Animated counters
@@ -982,7 +1012,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
           {/* Admin Dashboard / Developer Portal */}
           {isAdminMode && isPeterNgecu && (
-            <div className="p-4 bg-slate-900 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-3">
+            <div className="p-4 bg-slate-900 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black tracking-wider text-amber-400 uppercase">
                   🛠 ADMIN / DEVELOPER PORTAL
@@ -991,13 +1021,195 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </div>
 
               <p className="text-[11px] text-slate-300">
-                Manage restocking loan limits, evaluate sales eligibility, and approve/review pending loan requests.
+                Manage restocking loan applications, evaluate 3-month business eligibility, and disburse credit.
               </p>
 
-              {/* Set Limit */}
-              <div className="space-y-1">
+              {/* 1. RESTOCKING LOAN APPLICATIONS QUEUE */}
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-amber-400 uppercase tracking-wide">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Restocking Loan Applications ({loanApplications.length})</span>
+                  </div>
+                  <span className="text-[9px] text-slate-400">Real-time Portal Queue</span>
+                </div>
+
+                {loanApplications.length === 0 ? (
+                  <div className="p-3 bg-slate-800/80 rounded-xl text-center text-slate-400 text-xs">
+                    No restocking loan applications submitted yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                    {loanApplications.map((app) => {
+                      const isPending = app.status === 'pending_review';
+                      return (
+                        <div
+                          key={app.id}
+                          className={`p-3 rounded-xl border space-y-2 transition ${
+                            isPending
+                              ? 'bg-slate-800/95 border-amber-500/70 shadow-xs'
+                              : app.status === 'disbursed'
+                              ? 'bg-slate-800/60 border-emerald-600/50'
+                              : 'bg-slate-800/40 border-slate-700 opacity-70'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="text-xs font-black text-white flex items-center gap-1.5">
+                                <span>{app.shop_name}</span>
+                                <span
+                                  className={`text-[9px] px-1.5 py-0.2 rounded-md font-bold uppercase ${
+                                    isPending
+                                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                                      : app.status === 'disbursed'
+                                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                      : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                                  }`}
+                                >
+                                  {app.status === 'pending_review' ? 'Pending Review (24h)' : app.status}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                Owner: <strong className="text-slate-200">{app.owner_name}</strong> • Phone: <strong className="text-slate-200">{app.phone}</strong>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-sm font-black text-amber-400 tabular-nums">
+                                KES {app.amount.toLocaleString()}
+                              </div>
+                              <div className="text-[9px] text-slate-400">{app.duration_days} Days Term</div>
+                            </div>
+                          </div>
+
+                          <div className="p-2 bg-slate-900/80 rounded-lg text-[10px] text-slate-300 space-y-0.5 border border-slate-800">
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">Repayment Plan:</span>
+                              <span className="font-bold text-emerald-400">{app.instalment_breakdown || app.repayment_plan_desc}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400">Sales Record:</span>
+                              <span>Today KES {app.daily_sales_kes.toLocaleString()} / Week KES {app.weekly_sales_kes.toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between text-[9px] text-slate-500 pt-0.5">
+                              <span>Applied:</span>
+                              <span>{new Date(app.created_at).toLocaleDateString()} {new Date(app.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          </div>
+
+                          {/* Quick Admin Actions */}
+                          <div className="flex items-center gap-1.5 pt-1">
+                            {isPending && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await updateLoanApplicationStatus(app.id, 'disbursed', 'Approved by Admin');
+                                    const updatedShop = await getShopMeta();
+                                    onUpdateShop(updatedShop);
+                                    setLoanApplications(getAllLoanApplications());
+                                    alert(`Loan of KES ${app.amount.toLocaleString()} for ${app.shop_name} approved and marked disbursed!`);
+                                  }}
+                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-black transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 shadow-xs"
+                                >
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>Approve & Disburse</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await updateLoanApplicationStatus(app.id, 'rejected', 'Declined by Admin');
+                                    const updatedShop = await getShopMeta();
+                                    onUpdateShop(updatedShop);
+                                    setLoanApplications(getAllLoanApplications());
+                                    alert(`Loan request for ${app.shop_name} was declined.`);
+                                  }}
+                                  className="px-2.5 py-1.5 bg-rose-600/80 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold transition active:scale-95 cursor-pointer"
+                                >
+                                  Decline
+                                </button>
+                              </>
+                            )}
+
+                            {/* Direct WhatsApp Contact */}
+                            <a
+                              href={`https://wa.me/${(app.phone || '0712345678').replace(/\+/g, '').replace(/^0/, '254')}?text=${encodeURIComponent(
+                                `Hello ${app.owner_name}, regarding your SmartSort Restock Loan request for ${app.shop_name} of KES ${app.amount.toLocaleString()}...`
+                              )}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1.5 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition shadow-xs"
+                              title="Chat on WhatsApp"
+                            >
+                              <MessageSquare className="w-3 h-3" />
+                              <span>WhatsApp</span>
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* 2. 3-MONTH OPERATIONAL ELIGIBLE SHOPS SECTION */}
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-emerald-400 uppercase tracking-wide">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>3+ Months Operational Eligible Shops ({eligibleAlerts.length})</span>
+                  </div>
+                  <span className="text-[9px] text-slate-400">Quiet Admin Milestone</span>
+                </div>
+
+                {eligibleAlerts.length === 0 ? (
+                  <div className="p-2.5 bg-slate-800/60 rounded-xl text-center text-slate-400 text-[11px]">
+                    No shops have reached the 3-month operational threshold yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {eligibleAlerts.map((alertItem) => (
+                      <div
+                        key={alertItem.id}
+                        className="p-2.5 bg-slate-800 border border-emerald-500/40 rounded-xl text-xs space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-white">{alertItem.shop_name} ({alertItem.town})</span>
+                          <span className="text-[9px] text-emerald-300 font-mono bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-700">
+                            {alertItem.days_active} Days Active
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-300 flex justify-between">
+                          <span>Recommended Credit Limit:</span>
+                          <span className="font-black text-amber-400">KES {alertItem.calculated_limit.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-[9px] text-slate-400">
+                            Status: <strong className="text-slate-200 uppercase">{alertItem.status.replace(/_/g, ' ')}</strong>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminGrantLimitToShop(alertItem.shop_id, alertItem.calculated_limit);
+                              const updatedShop = await getShopMeta();
+                              onUpdateShop(updatedShop);
+                              setEligibleAlerts(getAllEligibleShopAlerts());
+                              alert(`Granted KES ${alertItem.calculated_limit.toLocaleString()} credit limit to ${alertItem.shop_name}!`);
+                            }}
+                            className="px-2 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-md text-[9px] transition cursor-pointer"
+                          >
+                            Grant Limit KES {alertItem.calculated_limit.toLocaleString()}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Set Limit Override */}
+              <div className="space-y-1 border-t border-slate-800 pt-3">
                 <label className="text-[9px] font-bold text-slate-400 uppercase block">
-                  Set Credit Limit Periodically (Owner/Admin Override):
+                  Manual Credit Limit Override (Current Shop):
                 </label>
                 <div className="grid grid-cols-4 gap-1.5">
                   {[0, 5000, 15000, 25000].map((lim) => (
@@ -1033,7 +1245,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     const nextVal = !shop.simulate_three_months_active;
                     const updated = await saveShopMeta({ 
                       simulate_three_months_active: nextVal,
-                      // If toggling off, force limit back to 0 by default to demonstrate the 3 months rule
                       loan_limit: nextVal ? shop.loan_limit : 0,
                       manual_limit_set: nextVal ? shop.manual_limit_set : false
                     });
@@ -1076,56 +1287,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   Evaluate Sales & Award
                 </button>
               </div>
-
-              {/* Approve/Decline request */}
-              {shop.active_loan_status === 'pending_approval' && (
-                <div className="p-3 bg-slate-800 border border-slate-700 rounded-xl space-y-2 mt-2">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-                    <span>🚨 Pending Loan Request</span>
-                  </div>
-                  <div className="text-[11px] text-slate-300 leading-normal">
-                    Shop requested a restocking loan of <strong>KES {shop.active_loan_amount?.toLocaleString()}</strong> for <strong>{shop.active_loan_duration || 7} Days</strong>.
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const amount = shop.active_loan_amount || 5000;
-                        const duration = shop.active_loan_duration || 7;
-                        const plan = getRepaymentPlan(amount);
-                        const fee = amount * plan.feePercent;
-                        const totalRepay = amount + fee;
-                        const updated = await saveShopMeta({
-                          active_loan_status: 'disbursed',
-                          active_loan_balance: totalRepay,
-                          active_loan_due_date: new Date(Date.now() + duration * 24 * 60 * 60 * 1000).toISOString(),
-                        });
-                        onUpdateShop(updated);
-                        alert(`Loan of KES ${amount.toLocaleString()} approved and successfully disbursed!`);
-                      }}
-                      className="py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-black transition active:scale-95 cursor-pointer"
-                    >
-                      Approve & Disburse
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const updated = await saveShopMeta({
-                          active_loan_status: 'none',
-                          active_loan_amount: 0,
-                          active_loan_balance: 0,
-                        });
-                        onUpdateShop(updated);
-                        alert('Loan request declined.');
-                      }}
-                      className="py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-black transition active:scale-95 cursor-pointer"
-                    >
-                      Decline
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -1260,19 +1421,39 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     </button>
                   </>
                 ) : shop.active_loan_status === 'pending_approval' ? (
-                  /* 2. LOAN PENDING APPROVAL */
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-center space-y-2 animate-pulse">
-                    <span className="text-2xl">⏳</span>
-                    <h4 className="font-bold text-slate-800 text-xs">
-                      {language === 'en' ? 'Application Under Review' : 'Ombi Linalokaguliwa'}
-                    </h4>
-                    <p className="text-[11px] text-slate-600 leading-relaxed">
-                      {language === 'en'
-                        ? `Your request for a restocking loan of KES ${shop.active_loan_amount?.toLocaleString()} is awaiting administrator review. peterngecu001@gmail.com has been notified for approval.`
-                        : `Ombi lako la mkopo wa KES ${shop.active_loan_amount?.toLocaleString()} linasubiri kuidhinishwa na admin. peterngecu001@gmail.com amearifiwa.`}
-                    </p>
-                    <div className="text-[10px] text-amber-800 bg-amber-100 rounded-lg p-1.5 font-bold uppercase inline-block">
-                      {language === 'en' ? 'Awaiting Admin Approval' : 'Inasubiri Idhini ya Admin'}
+                  /* 2. LOAN PENDING APPROVAL - CLEAN NOTIFICATION & WHATSAPP INTEGRATION */
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-center space-y-2.5">
+                    <div className="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center mx-auto text-amber-700">
+                      <Clock className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div>
+                      <h4 className="font-black text-slate-800 text-xs">
+                        {language === 'en' ? 'Application Under Review' : 'Ombi Linalokaguliwa'}
+                      </h4>
+                      <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
+                        {language === 'en'
+                          ? `Your request for a restocking loan of KES ${shop.active_loan_amount?.toLocaleString()} is under review. Approval typically takes up to 24 hours. You will be notified immediately once finalized.`
+                          : `Ombi lako la mkopo wa bidhaa wa KES ${shop.active_loan_amount?.toLocaleString()} linakaguliwa. Uamuzi huchukua hadi saa 24. Utaarifiwa punde litakapokamilika.`}
+                      </p>
+                    </div>
+
+                    <div className="text-[10px] text-amber-800 bg-amber-100/80 rounded-lg py-1 px-2.5 font-bold uppercase inline-block">
+                      {language === 'en' ? 'Review Period: Up to 24 Hours' : 'Muda wa Ukaguzi: Hadi Saa 24'}
+                    </div>
+
+                    {/* Direct WhatsApp Action with pre-filled message */}
+                    <div className="pt-1">
+                      <a
+                        href={`https://wa.me/254712345678?text=${encodeURIComponent(
+                          `Hello SmartSort Credit Admin, my shop is ${shop.shop_name} (Phone: ${shop.phone || '0712345678'}, Town: ${shop.town || 'Nairobi'}). I have submitted a restocking loan application for KES ${shop.active_loan_amount?.toLocaleString()}. Kindly review and approve.`
+                        )}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full py-2 bg-[#25D366] hover:bg-[#20ba5a] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer shadow-xs text-center"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>{language === 'en' ? 'Send Application via WhatsApp' : 'Tuma Ombi kwa WhatsApp'}</span>
+                      </a>
                     </div>
                   </div>
                 ) : !shop.loan_limit || shop.loan_limit === 0 ? (
@@ -1298,7 +1479,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                       disabled
                       className="w-full py-2.5 bg-slate-200 text-slate-400 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-not-allowed border border-slate-300"
                     >
-                      <span>🔒</span>
+                      <ShieldCheck className="w-4 h-4 text-slate-400" />
                       <span>{language === 'en' ? 'Eligible after 3 months activity' : 'Utastahili baada ya miezi 3 ya kazi'}</span>
                     </button>
                   </>
@@ -1307,7 +1488,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   <>
                     <div className="p-3.5 bg-emerald-50/60 border border-emerald-200 rounded-2xl space-y-2">
                       <div className="text-[10px] font-black text-emerald-800 uppercase tracking-widest flex items-center gap-1">
-                        <span className="animate-pulse text-xs">✨</span>
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
                         {language === 'en' ? 'VERIFIED CREDIT LIMIT' : 'KIKOMO KILICHOTHIBITISHWA'}
                       </div>
                       <div className="text-2xl font-black text-slate-950 tabular-nums">
@@ -1330,7 +1511,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                       }}
                       className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer shadow-md"
                     >
-                      <span>🚀</span>
+                      <CreditCard className="w-4 h-4" />
                       <span>{language === 'en' ? 'Request Instant Loan' : 'Omba Mkopo wa Papo Hapo'}</span>
                     </button>
                   </>
@@ -1487,12 +1668,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </div>
               <div>
                 <h3 className="text-lg font-black text-emerald-950">
-                  {language === 'en' ? 'Request Submitted Successfully!' : 'Ombi Limetumwa Kikamilifu!'}
+                  {language === 'en' ? 'Application Submitted Successfully!' : 'Ombi Limetumwa Kikamilifu!'}
                 </h3>
                 <p className="text-xs text-emerald-800 mt-1 font-medium leading-relaxed">
                   {language === 'en'
-                    ? `Your loan request of KES ${selectedLoanAmount.toLocaleString()} has been queued and emailed. To fast-track your B2C disbursement, please call or WhatsApp our customer care desk directly.`
-                    : `Ombi lako la mkopo la KES ${selectedLoanAmount.toLocaleString()} limetumwa kwa barua pepe na kuhifadhiwa. Kuidhinishwa haraka, piga simu au ututumie ujumbe wa WhatsApp sasa.`}
+                    ? `Your restocking loan application of KES ${selectedLoanAmount.toLocaleString()} is currently under review. Approval typically takes up to 24 hours. You will be notified immediately once finalized.`
+                    : `Ombi lako la mkopo wa bidhaa wa KES ${selectedLoanAmount.toLocaleString()} linakaguliwa. Uamuzi huchukua hadi saa 24. Utaarifiwa punde litakapokamilika.`}
                 </p>
               </div>
 
@@ -1512,26 +1693,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </div>
 
               <div className="space-y-1.5 pt-1">
-                {/* Call Customer Care Call Link */}
-                <a
-                  href="tel:+254712345678"
-                  className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-xl text-xs flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer shadow-sm text-center"
-                >
-                  <span>📞</span>
-                  <span>{language === 'en' ? 'Call Customer Care (0712345678)' : 'Piga Simu ya Huduma (0712345678)'}</span>
-                </a>
-
                 {/* WhatsApp call line */}
                 <a
                   href={`https://wa.me/254712345678?text=${encodeURIComponent(
-                    `Hello SmartSort Finance, my shop is ${shop.shop_name} (Phone: ${shop.phone || '0712345678'}). I have requested a restocking loan of KES ${selectedLoanAmount.toLocaleString()} with repayment of ${loanDurationDays} Days. Kindly disburse.`
+                    `Hello SmartSort Credit, my shop is ${shop.shop_name} (Phone: ${shop.phone || '0712345678'}, Town: ${shop.town || 'Nairobi'}). I have submitted a restocking loan application for KES ${selectedLoanAmount.toLocaleString()} with repayment period of ${loanDurationDays} Days. Kindly review and process.`
                   )}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="w-full py-2.5 bg-[#25D366] hover:bg-[#20ba5a] text-white font-black rounded-xl text-xs flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer shadow-md text-center"
                 >
-                  <span>💬</span>
-                  <span>{language === 'en' ? 'WhatsApp Fast-Track' : 'Tuma WhatsApp Harakishe'}</span>
+                  <MessageSquare className="w-4 h-4" />
+                  <span>{language === 'en' ? 'Send Application via WhatsApp' : 'Tuma Ombi kwa WhatsApp'}</span>
+                </a>
+
+                {/* Call Customer Care Call Link */}
+                <a
+                  href="tel:+254712345678"
+                  className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-xl text-xs flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer shadow-sm text-center"
+                >
+                  <PhoneCall className="w-4 h-4" />
+                  <span>{language === 'en' ? 'Call Credit Support Desk' : 'Piga Dawati la Mikopo'}</span>
                 </a>
               </div>
 
@@ -1549,7 +1730,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <>
               {/* Promotion Banner */}
               <div className="p-3.5 bg-gradient-to-br from-emerald-800 to-teal-900 text-white rounded-2xl shadow-sm flex items-center gap-3">
-                <span className="text-2xl shrink-0">✨</span>
+                <Sparkles className="w-6 h-6 text-emerald-300 shrink-0" />
                 <div>
                   <div className="text-[10px] font-bold text-emerald-200 uppercase tracking-wider">
                     {language === 'en' ? 'Flexible Instalment Restocking Credit' : 'Mkopo wa Bidhaa wa Awamu Flexi'}
@@ -1646,33 +1827,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   setIsProcessingLoan(true);
                   setLoanError('');
                   try {
-                    // 1. Submit email request to Formspree for peterngecu001@gmail.com
-                    try {
-                      await fetch('https://formspree.io/f/mqkrbnzo', {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json',
-                          'Accept': 'application/json'
-                        },
-                        body: JSON.stringify({
-                          _subject: `SmartSort New Duka Loan Request from ${shop.shop_name}`,
-                          shopName: shop.shop_name,
-                          ownerName: shop.owner_name,
-                          phoneNumber: shop.phone || 'No phone',
-                          requestedAmount: selectedLoanAmount,
-                          repaymentTerm: `${getRepaymentPlan(selectedLoanAmount).days} Days`,
-                          instalmentBreakdown: getRepaymentPlan(selectedLoanAmount).breakdownEn,
-                          dailySalesToday: todaySalesKES,
-                          weeklySales: weekSalesKES,
-                          userEmail: user.email || 'No email'
-                        })
-                      });
-                    } catch (e) {
-                      console.warn('Formspree dispatch failed (offline or network block):', e);
-                    }
+                    const plan = getRepaymentPlan(selectedLoanAmount);
+
+                    // 1. Submit application to the admin portal queue
+                    await submitLoanApplication({
+                      shop_id: shop.shop_id,
+                      shop_name: shop.shop_name,
+                      owner_name: shop.owner_name,
+                      phone: shop.phone || '0712345678',
+                      email: user.email || undefined,
+                      town: shop.town || undefined,
+                      county: shop.county || undefined,
+                      amount: selectedLoanAmount,
+                      duration_days: plan.days,
+                      repayment_plan_desc: plan.descriptionEn,
+                      instalment_breakdown: plan.breakdownEn,
+                      daily_sales_kes: todaySalesKES,
+                      weekly_sales_kes: weekSalesKES,
+                    });
 
                     // 2. Commit pending approval status to local Dexie ShopMeta
-                    const plan = getRepaymentPlan(selectedLoanAmount);
                     const updated = await saveShopMeta({
                       active_loan_amount: selectedLoanAmount,
                       active_loan_duration: plan.days,
@@ -1680,6 +1854,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     });
                     
                     onUpdateShop(updated);
+                    setLoanApplications(getAllLoanApplications());
                     setLoanSuccess(true);
                     if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
                       window.navigator.vibrate([40, 40, 40]);
@@ -1699,7 +1874,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </>
                 ) : (
                   <>
-                    <span>🚀</span>
+                    <Send className="w-4 h-4 mr-1.5" />
                     <span>{language === 'en' ? `Apply for KES ${selectedLoanAmount.toLocaleString()}` : `Omba KES ${selectedLoanAmount.toLocaleString()}`}</span>
                   </>
                 )}
