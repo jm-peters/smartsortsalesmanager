@@ -20,6 +20,8 @@ import {
   Calculator,
   RotateCcw,
   Scale,
+  Camera,
+  Barcode,
 } from 'lucide-react';
 import {
   db,
@@ -52,6 +54,8 @@ import { FirstProductGuide } from '../components/FirstProductGuide';
 import { ReceiptModal } from '../components/ReceiptModal';
 import { QuickAddActionSheet } from '../components/QuickAddActionSheet';
 import { VoidSaleModal } from '../components/VoidSaleModal';
+import { BarcodeScannerModal } from '../components/BarcodeScannerModal';
+import { NewProductBarcodeModal } from '../components/NewProductBarcodeModal';
 import { shareReceipt, generateReceiptSummaryText } from '../lib/receipt';
 import { translations, type Language } from '../lib/i18n';
 
@@ -147,6 +151,43 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   // Void Transaction State
   const [saleToVoid, setSaleToVoid] = useState<{ sale: SaleHeader; items: SaleItem[] } | null>(null);
   const [voidSuccessToast, setVoidSuccessToast] = useState<string | null>(null);
+
+  // Barcode Scanner State
+  const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
+  const [unrecognizedBarcode, setUnrecognizedBarcode] = useState<string | null>(null);
+  const [scanSuccessToast, setScanSuccessToast] = useState<string | null>(null);
+
+  const addProductToCart = (product: Product) => {
+    setCart((prev) => {
+      const idx = prev.findIndex((i) => i.product.id === product.id);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], qty: updated[idx].qty + 1 };
+        return updated;
+      }
+      return [...prev, { product, qty: 1, unitPrice: product.selling_price }];
+    });
+  };
+
+  const handleScannedBarcode = async (barcode: string) => {
+    try {
+      const existingProduct = await db.products.where('barcode').equals(barcode).first();
+      if (existingProduct) {
+        addProductToCart(existingProduct);
+        setScanSuccessToast(
+          isEn
+            ? `✅ ${existingProduct.name} - Price ${formatKES(existingProduct.selling_price)} added!`
+            : `✅ ${existingProduct.name} - Bei ${formatKES(existingProduct.selling_price)} imeongezwa!`
+        );
+        setTimeout(() => setScanSuccessToast(null), 3500);
+      } else {
+        setUnrecognizedBarcode(barcode);
+      }
+    } catch (err) {
+      console.error('Barcode lookup error:', err);
+      setUnrecognizedBarcode(barcode);
+    }
+  };
 
   // Finalize Sale Animation State
   const [isFinalizing, setIsFinalizing] = useState(false);
@@ -868,6 +909,17 @@ export const SellScreen: React.FC<SellScreenProps> = ({
               <span className="hidden sm:inline">#{recentReceipt.sale.sale_no}</span>
             </button>
           )}
+
+          {/* Scan with Camera Button */}
+          <button
+            type="button"
+            onClick={() => setIsBarcodeScannerOpen(true)}
+            className="h-11 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 transition flex items-center gap-1.5 text-xs font-black shadow-sm shrink-0 cursor-pointer"
+            title={isEn ? 'Scan Barcode with Camera' : 'Skania Msimbo kwa Kamera'}
+          >
+            <Camera className="w-4 h-4" />
+            <span className="hidden sm:inline">{isEn ? 'Scan' : 'Skania'}</span>
+          </button>
 
           {/* Quick Action (+) Button for Expenses, Products, Debts (§Feature 7) */}
           <button
@@ -1903,6 +1955,50 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           </Sheet>
         );
       })()}
+
+      {/* Scan Success Toast Banner */}
+      {scanSuccessToast && (
+        <div className="fixed top-16 left-4 right-4 z-40 max-w-[420px] mx-auto bg-emerald-900/95 backdrop-blur-md text-white p-3.5 rounded-2xl shadow-xl flex items-center justify-between animate-in slide-in-from-top duration-200 border border-emerald-700/60">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">✨</span>
+            <span className="text-xs font-bold leading-snug">{scanSuccessToast}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setScanSuccessToast(null)}
+            className="p-1 text-emerald-200 hover:text-white text-xs font-bold cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Barcode Scanner Modal */}
+      <BarcodeScannerModal
+        isOpen={isBarcodeScannerOpen}
+        onClose={() => setIsBarcodeScannerOpen(false)}
+        onBarcodeScanned={handleScannedBarcode}
+        language={language}
+      />
+
+      {/* New Product Barcode Registration Modal ("New product, what's this?") */}
+      {unrecognizedBarcode && (
+        <NewProductBarcodeModal
+          isOpen={Boolean(unrecognizedBarcode)}
+          onClose={() => setUnrecognizedBarcode(null)}
+          barcode={unrecognizedBarcode}
+          onProductLearnedAndAdded={(newProd) => {
+            addProductToCart(newProd);
+            setScanSuccessToast(
+              isEn
+                ? `✨ Learned & Added: ${newProd.name} - Price ${formatKES(newProd.selling_price)}`
+                : `✨ Imejifunza na Kuongezwa: ${newProd.name} - Bei ${formatKES(newProd.selling_price)}`
+            );
+            setTimeout(() => setScanSuccessToast(null), 4000);
+          }}
+          language={language}
+        />
+      )}
     </div>
   );
 };

@@ -113,6 +113,7 @@ export interface Customer {
   credit_limit_set_by?: string | null;
   credit_limit_set_at?: string | null;
   credit_notes?: string | null;
+  loyalty_points?: number;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -437,6 +438,8 @@ export interface ShopMeta {
   loan_limit?: number;
   simulate_three_months_active?: boolean;
   manual_limit_set?: boolean;
+  loyalty_enabled?: boolean;
+  loyalty_points_per_100_kes?: number;
 }
 
 export interface SubscriptionPaymentRecord {
@@ -608,6 +611,8 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
       plan_status: updated.plan_status,
       subscription_paid_until: updated.subscription_paid_until,
       preferred_payment_method: updated.preferred_payment_method,
+      loyalty_enabled: updated.loyalty_enabled,
+      loyalty_points_per_100_kes: updated.loyalty_points_per_100_kes,
       updated_at: now,
     };
 
@@ -624,6 +629,25 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
   }
 
   return updated;
+}
+
+export async function adjustCustomerLoyaltyPoints(customerId: string, pointsDelta: number): Promise<void> {
+  const now = serverNow();
+  const cust = await db.customers.get(customerId);
+  if (!cust) return;
+  const newPoints = Math.max(0, (cust.loyalty_points || 0) + pointsDelta);
+  await db.customers.update(customerId, {
+    loyalty_points: newPoints,
+    updated_at: now,
+  });
+  void syncWriteThrough({
+    id: customerId,
+    table: 'customers',
+    op: 'update',
+    payload: { id: customerId, loyalty_points: newPoints, updated_at: now },
+    attempts: 0,
+    next_attempt_at: now,
+  });
 }
 
 /**
@@ -1139,6 +1163,57 @@ export async function recordSale(saleData: {
     };
   }
 
+  // Loyalty points calculation if enabled
+  if (shop.loyalty_enabled && saleData.customer && saleData.customer.name.trim()) {
+    let custId = saleData.customer.id;
+    let existingCust = custId ? await db.customers.get(custId) : null;
+    if (!existingCust && saleData.customer.name) {
+      const allC = await db.customers.where('name').equalsIgnoreCase(saleData.customer.name.trim()).toArray();
+      existingCust = allC.find(c => c.deleted_at === null);
+      if (existingCust) custId = existingCust.id;
+    }
+
+    const pointsPer100 = shop.loyalty_points_per_100_kes ?? 1;
+    const pointsEarned = Math.floor(totalAmount / 100) * pointsPer100;
+    if (pointsEarned > 0) {
+      if (existingCust && custId) {
+        const newPoints = (existingCust.loyalty_points || 0) + pointsEarned;
+        await db.customers.update(custId, { loyalty_points: newPoints, updated_at: now });
+        outboxEntries.push({
+          id: custId,
+          table: 'customers',
+          op: 'update',
+          payload: { id: custId, loyalty_points: newPoints, updated_at: now },
+          attempts: 0,
+          next_attempt_at: now,
+        });
+      } else {
+        const newCustId = custId || crypto.randomUUID();
+        const newCust: Customer = {
+          id: newCustId,
+          shop_id: shop.shop_id,
+          name: saleData.customer.name.trim(),
+          phone: saleData.customer.phone || null,
+          notes: null,
+          credit_limit: shop.default_credit_limit ?? null,
+          loyalty_points: pointsEarned,
+          created_at: now,
+          updated_at: now,
+          deleted_at: null,
+        };
+        await db.customers.put(newCust);
+        outboxEntries.push({
+          id: newCustId,
+          table: 'customers',
+          op: 'insert',
+          payload: newCust as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        });
+      }
+    }
+  }
+
   const saleHeader: SaleHeader = {
     id: saleId,
     shop_id: shop.shop_id,
@@ -1168,6 +1243,7 @@ export async function recordSale(saleData: {
       db.stock_movements,
       db.product_stock,
       db.debts,
+      db.customers,
       db.outbox,
       db.audit_log,
     ],

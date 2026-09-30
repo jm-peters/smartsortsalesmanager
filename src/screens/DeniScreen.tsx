@@ -26,6 +26,8 @@ import {
   recordDebtPayment,
   recordCustomerDebtPayment,
   getShopMeta,
+  saveShopMeta,
+  adjustCustomerLoyaltyPoints,
   getOrCreateDeviceId,
   syncWriteThrough,
   type OutboxEntry,
@@ -119,7 +121,12 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
   // Defaulted Debt Helpline Claim Modal State (2+ Months 70% Compensation)
   const [claimDebt, setClaimDebt] = useState<Debt | null>(null);
 
+  // Loyalty Points Modal State
+  const [loyaltyModalCustomer, setLoyaltyModalCustomer] = useState<Customer | null>(null);
+  const [loyaltyDeltaStr, setLoyaltyDeltaStr] = useState('');
+
   // Live queries
+  const shopMeta = useLiveQuery(() => getShopMeta(), []);
   const debts = useLiveQuery(
     () => db.debts.orderBy('created_at').reverse().toArray(),
     []
@@ -653,6 +660,46 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
           </div>
         </div>
 
+        {/* Customer Loyalty Points Program Banner */}
+        <div className="bg-gradient-to-r from-amber-500/10 via-amber-600/5 to-emerald-500/10 border border-amber-200/60 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🎁</span>
+              <h3 className="font-black text-sm text-slate-900">
+                {isEn ? 'Customer Loyalty Points Program' : 'Mpango wa Pointi za Uaminifu za Wateja'}
+              </h3>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                shopMeta?.loyalty_enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
+              }`}>
+                {shopMeta?.loyalty_enabled ? (isEn ? 'Active' : 'Inatumika') : (isEn ? 'Inactive' : 'Imezimwa')}
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              {isEn
+                ? 'Reward repeat buyers automatically. Customers earn loyalty points on every purchase (default: 1 pt per KES 100 spent).'
+                : 'Zawadi wateja waaminifu moja kwa moja. Wateja wanapata pointi kwa kila ununuzi (wastani: pointi 1 kwa KES 100).'}
+            </p>
+          </div>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={async () => {
+                const newState = !shopMeta?.loyalty_enabled;
+                await saveShopMeta({ loyalty_enabled: newState });
+              }}
+              className={`px-4 py-2 rounded-xl text-xs font-black shadow-xs transition shrink-0 cursor-pointer ${
+                shopMeta?.loyalty_enabled
+                  ? 'bg-rose-100 hover:bg-rose-200 text-rose-800'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
+            >
+              {shopMeta?.loyalty_enabled
+                ? (isEn ? 'Disable Loyalty Points' : 'Zima Pointi za Uaminifu')
+                : (isEn ? 'Enable Loyalty Points' : 'Washa Pointi za Uaminifu')}
+            </button>
+          )}
+        </div>
+
         {/* Search Bar */}
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -873,6 +920,27 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                                 {group.debts.length} {group.debts.length === 1 ? (isEn ? 'entry' : 'muamala') : (isEn ? 'entries' : 'miamala')}
                               </span>
                             </div>
+
+                            {/* Loyalty Points Badge */}
+                            {shopMeta?.loyalty_enabled && (
+                              <div className="mt-1 flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const fullCust = customerMap.get(group.customer.id) || (group.customer as Customer);
+                                    if (fullCust && fullCust.id) {
+                                      setLoyaltyModalCustomer(fullCust as Customer);
+                                      setLoyaltyDeltaStr('');
+                                    }
+                                  }}
+                                  className="flex items-center gap-1 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2.5 py-0.5 rounded-lg text-amber-900 text-[11px] font-bold transition shadow-2xs cursor-pointer"
+                                  title={isEn ? 'Manage customer loyalty points' : 'Simamia pointi za uaminifu za mteja'}
+                                >
+                                  <span>⭐</span>
+                                  <span>{isEn ? 'Loyalty Balance:' : 'Salio la Uaminifu:'} {((group.customer as Customer).loyalty_points || 0)} pts</span>
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -1377,6 +1445,81 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
           )}
           language={language}
         />
+      )}
+
+      {/* Loyalty Points Adjustment / Redemption Modal */}
+      {loyaltyModalCustomer && (
+        <Sheet
+          isOpen={Boolean(loyaltyModalCustomer)}
+          onClose={() => setLoyaltyModalCustomer(null)}
+          title={isEn ? 'Customer Loyalty Points' : 'Pointi za Uaminifu za Mteja'}
+          subtitle={loyaltyModalCustomer.name}
+        >
+          <div className="space-y-4 pt-2">
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-between">
+              <div>
+                <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">
+                  {isEn ? 'Current Balance' : 'Salio la Sasa'}
+                </span>
+                <div className="text-2xl font-black text-amber-900 mt-0.5">
+                  ⭐ {loyaltyModalCustomer.loyalty_points || 0} pts
+                </div>
+              </div>
+              <div className="text-right text-xs text-amber-700">
+                {loyaltyModalCustomer.phone || (isEn ? 'No Phone' : 'Hakuna Simu')}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700 block">
+                {isEn ? 'Adjust Points (Add + or Redeem -):' : 'Rekebisha Pointi (Ongeza + au Tumia -):'}
+              </label>
+              <input
+                type="number"
+                value={loyaltyDeltaStr}
+                onChange={(e) => setLoyaltyDeltaStr(e.target.value)}
+                placeholder={isEn ? 'e.g. 50 (add) or -20 (redeem)...' : 'mfano 50 (ongeza) au -20 (tumia)...'}
+                className="w-full h-11 px-3 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-amber-500 font-bold tabular-nums"
+              />
+              <p className="text-[11px] text-slate-500">
+                {isEn
+                  ? 'Enter positive value to award bonus loyalty points, or negative value to redeem/deduct points.'
+                  : 'Weka namba chanya kuongeza pointi za zawadi, au namba hasi kupunguza/kutoa pointi zilizotumiwa.'}
+              </p>
+            </div>
+
+            <div className="pt-2 flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setLoyaltyModalCustomer(null)}
+                className="flex-1 text-xs"
+              >
+                {isEn ? 'Cancel' : 'Ghairi'}
+              </Button>
+              <Button
+                variant="gradient"
+                onClick={async () => {
+                  const delta = Number(loyaltyDeltaStr);
+                  if (!delta) return;
+                  const currentPts = loyaltyModalCustomer.loyalty_points || 0;
+                  const newPts = currentPts + delta;
+                  await adjustCustomerLoyaltyPoints(loyaltyModalCustomer.id, delta);
+                  if (typeof window !== 'undefined') {
+                    window.alert(
+                      isEn
+                        ? `Loyalty points updated successfully. New balance: ${Math.max(0, newPts)} pts`
+                        : `Pointi za uaminifu zimesasishwa. Salio jipya: ${Math.max(0, newPts)} pts`
+                    );
+                  }
+                  setLoyaltyModalCustomer(null);
+                }}
+                className="flex-1 text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white"
+              >
+                {isEn ? 'Save Points' : 'Hifadhi Pointi'}
+              </Button>
+            </div>
+          </div>
+        </Sheet>
       )}
 
       {/* WhatsApp Sent Floating Toast */}
