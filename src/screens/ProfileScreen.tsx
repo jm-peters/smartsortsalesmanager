@@ -45,8 +45,12 @@ import {
   checkAndRegisterShopEligibility,
   getAllEligibleShopAlerts,
   adminGrantLimitToShop,
+  getAllSubscriptionClaims,
+  updateSubscriptionClaimStatus,
+  incrementClaimReminder,
   type LoanApplication,
   type EligibleShopAlert,
+  type SubscriptionPaymentClaim,
 } from '../lib/loans';
 import { translations, type Language } from '../lib/i18n';
 import { EmojiPickerModal } from '../components/EmojiPickerModal';
@@ -158,6 +162,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [loanApplications, setLoanApplications] = useState<LoanApplication[]>(() => getAllLoanApplications());
   const [eligibleAlerts, setEligibleAlerts] = useState<EligibleShopAlert[]>(() => getAllEligibleShopAlerts());
+  const [subscriptionClaims, setSubscriptionClaims] = useState<SubscriptionPaymentClaim[]>(() => getAllSubscriptionClaims());
   const [copyrightTaps, setCopyrightTaps] = useState(0);
   const [instalmentAmount, setInstalmentAmount] = useState<string>('');
   const [isPayingInstalment, setIsPayingInstalment] = useState(false);
@@ -262,6 +267,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         }
 
         setLoanApplications(getAllLoanApplications());
+        setSubscriptionClaims(getAllSubscriptionClaims());
 
         const currentLimit = shop.loan_limit ?? 0;
         if (awardedLimit !== currentLimit && !shop.manual_limit_set) {
@@ -277,10 +283,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     const handleLoanAppsChanged = () => {
       setLoanApplications(getAllLoanApplications());
       setEligibleAlerts(getAllEligibleShopAlerts());
+      setSubscriptionClaims(getAllSubscriptionClaims());
     };
     window.addEventListener('smartsort_loan_apps_changed', handleLoanAppsChanged);
+    window.addEventListener('smartsort_subscription_claims_changed', handleLoanAppsChanged);
     return () => {
       window.removeEventListener('smartsort_loan_apps_changed', handleLoanAppsChanged);
+      window.removeEventListener('smartsort_subscription_claims_changed', handleLoanAppsChanged);
     };
   }, [shop, todaySalesKES, weekSalesKES]);
 
@@ -508,7 +517,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           <div className="text-xs font-semibold text-slate-600 mt-1 px-1 flex items-center gap-2">
             <span>{shop.owner_name}</span>
             <span className="text-slate-300">•</span>
-            <span className="text-slate-500">@{user.username || 'petermwangi'}</span>
+            <span className="text-slate-500">@{user.username || 'johnkamau'}</span>
           </div>
         </div>
       </div>
@@ -853,7 +862,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     <span className="text-lg">👑</span>
                     <div>
                       <div className="font-bold text-slate-900">{user.name}</div>
-                      <div className="text-[10px] text-slate-400">@{user.username || 'petermwangi'}</div>
+                      <div className="text-[10px] text-slate-400">@{user.username || 'johnkamau'}</div>
                     </div>
                   </div>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 uppercase">
@@ -1206,8 +1215,90 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 )}
               </div>
 
-              {/* Set Limit Override */}
-              <div className="space-y-1 border-t border-slate-800 pt-3">
+              {/* 3. SUBSCRIPTION PAYMENT CLAIMS & SELLER REMINDERS SECTION */}
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-cyan-400 uppercase tracking-wide">
+                    <CreditCard className="w-3.5 h-3.5" />
+                    <span>Subscription Claims & Reminders ({subscriptionClaims.length})</span>
+                  </div>
+                  <span className="text-[9px] text-slate-400">Tapped Paid / Pending Verification</span>
+                </div>
+
+                {subscriptionClaims.length === 0 ? (
+                  <div className="p-2.5 bg-slate-800/60 rounded-xl text-center text-slate-400 text-[11px]">
+                    No subscription payment claims or pending reminders recorded yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {subscriptionClaims.map((claim) => {
+                      const isPending = claim.status === 'pending_verification';
+                      return (
+                        <div
+                          key={claim.id}
+                          className={`p-2.5 rounded-xl border text-xs space-y-1.5 ${
+                            isPending
+                              ? 'bg-slate-800 border-cyan-500/50'
+                              : 'bg-slate-800/50 border-slate-700 opacity-75'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-white">{claim.shop_name}</span>
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-black uppercase ${
+                              isPending ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' : 'bg-emerald-500/20 text-emerald-300'
+                            }`}>
+                              {isPending ? 'Pending Verification' : claim.status}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-300 flex justify-between">
+                            <span>Owner: {claim.owner_name} ({claim.phone})</span>
+                            <span className="font-black text-amber-400">KES {claim.amount_kes.toLocaleString()} ({claim.days} Days)</span>
+                          </div>
+                          <div className="flex items-center justify-between pt-1 gap-1.5">
+                            {isPending && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateSubscriptionClaimStatus(claim.id, 'verified');
+                                  setSubscriptionClaims(getAllSubscriptionClaims());
+                                  alert(`Subscription payment of KES ${claim.amount_kes.toLocaleString()} for ${claim.shop_name} successfully verified!`);
+                                }}
+                                className="py-1 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[9px] font-black transition cursor-pointer flex-1 text-center"
+                              >
+                                Verify & Confirm
+                              </button>
+                            )}
+                            <a
+                              href={`https://wa.me/${claim.phone.replace(/\+/g, '').replace(/^0/, '254')}?text=${encodeURIComponent(
+                                `Hello ${claim.owner_name}, this is SmartSort Finance. We notice your subscription payment of KES ${claim.amount_kes.toLocaleString()} for ${claim.shop_name} is pending verification or due. Kindly pay via Equity Till (Paybill 247247, Account 253499) using your registered number (${claim.phone}) and tap Paid. Thank you!`
+                              )}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => {
+                                incrementClaimReminder(claim.id);
+                                setSubscriptionClaims(getAllSubscriptionClaims());
+                              }}
+                              className="py-1 px-2.5 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded text-[9px] font-bold flex items-center justify-center gap-1 cursor-pointer transition shrink-0"
+                              title="Send Reminder on WhatsApp"
+                            >
+                              <MessageSquare className="w-3 h-3" />
+                              <span>Send Reminder {claim.reminder_sent_count ? `(${claim.reminder_sent_count})` : ''}</span>
+                            </a>
+                            <a
+                              href={`tel:${claim.phone}`}
+                              className="py-1 px-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-[9px] font-bold flex items-center justify-center gap-1 cursor-pointer transition shrink-0"
+                            >
+                              <PhoneCall className="w-3 h-3" />
+                              <span>Call</span>
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="space-y-1.5 border-t border-slate-800 pt-3">
                 <label className="text-[9px] font-bold text-slate-400 uppercase block">
                   Manual Credit Limit Override (Current Shop):
                 </label>
@@ -1233,36 +1324,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </div>
               </div>
 
-              {/* Simulate 3+ Months Toggle */}
-              <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2 text-xs">
-                <div className="space-y-0.5">
-                  <div className="text-[10px] font-black uppercase text-amber-400">Account Age Simulation</div>
-                  <div className="text-[9px] text-slate-400">Simulate shop active for 3+ months</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const nextVal = !shop.simulate_three_months_active;
-                    const updated = await saveShopMeta({ 
-                      simulate_three_months_active: nextVal,
-                      loan_limit: nextVal ? shop.loan_limit : 0,
-                      manual_limit_set: nextVal ? shop.manual_limit_set : false
-                    });
-                    onUpdateShop(updated);
-                    alert(nextVal 
-                      ? 'Simulated active state: Shop is now treated as active for over 3 months!'
-                      : 'Simulated active state removed: Shop is now subject to standard 3-month restriction.'
-                    );
-                  }}
-                  className={`px-2.5 py-1.5 rounded text-[9px] font-black border transition cursor-pointer uppercase ${
-                    shop.simulate_three_months_active
-                      ? 'bg-emerald-600 text-white border-emerald-500'
-                      : 'bg-slate-800 text-amber-400 border-slate-700 hover:bg-slate-700'
-                  }`}
-                >
-                  {shop.simulate_three_months_active ? '✅ Simulated (3+ Months)' : '❌ Not Simulated'}
-                </button>
-              </div>
+
 
               {/* Auto award limit */}
               <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2">

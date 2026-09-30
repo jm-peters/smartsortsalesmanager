@@ -16,6 +16,7 @@ import { Sheet } from './Sheet';
 import { Button } from './Button';
 import { formatKES, toKES } from '../lib/money';
 import { recordSubscriptionPayment, type ShopMeta } from '../lib/db/local';
+import { saveSubscriptionClaim } from '../lib/loans';
 import type { Language } from '../lib/i18n';
 
 interface SubscriptionPaymentModalProps {
@@ -115,6 +116,16 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
         amount: enteredAmount,
         paymentMethod: 'mpesa_till',
         phone: registeredPhone || null as any,
+      });
+
+      // Save claim for admin verification and reminder tracking
+      saveSubscriptionClaim({
+        shop_id: shop.shop_id,
+        shop_name: shop.shop_name,
+        owner_name: shop.owner_name,
+        phone: registeredPhone || '0712345678',
+        amount_kes: enteredAmount,
+        days: calculatedDays,
       });
 
       setLastPaymentResult({

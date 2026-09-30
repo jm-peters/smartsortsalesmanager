@@ -44,8 +44,69 @@ export interface EligibleShopAlert {
   detected_at: string;
 }
 
+export interface SubscriptionPaymentClaim {
+  id: string;
+  shop_id: string;
+  shop_name: string;
+  owner_name: string;
+  phone: string;
+  amount_kes: number;
+  days: number;
+  status: 'pending_verification' | 'verified' | 'unresolved';
+  created_at: string;
+  reminder_sent_count: number;
+}
+
 const LOAN_APPS_STORAGE_KEY = 'smartsort_loan_applications_v1';
 const ELIGIBLE_ALERTS_STORAGE_KEY = 'smartsort_eligible_shop_alerts_v1';
+const SUBSCRIPTION_CLAIMS_KEY = 'smartsort_subscription_claims_v1';
+
+export function getAllSubscriptionClaims(): SubscriptionPaymentClaim[] {
+  try {
+    const raw = localStorage.getItem(SUBSCRIPTION_CLAIMS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (err) {
+    return [];
+  }
+}
+
+export function saveSubscriptionClaim(payload: {
+  shop_id: string;
+  shop_name: string;
+  owner_name: string;
+  phone: string;
+  amount_kes: number;
+  days: number;
+}): SubscriptionPaymentClaim {
+  const existing = getAllSubscriptionClaims();
+  const now = new Date().toISOString();
+  const newClaim: SubscriptionPaymentClaim = {
+    id: `subclaim-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    ...payload,
+    status: 'pending_verification',
+    created_at: now,
+    reminder_sent_count: 0,
+  };
+  const updated = [newClaim, ...existing.filter(c => c.shop_id !== payload.shop_id || c.status !== 'pending_verification')];
+  localStorage.setItem(SUBSCRIPTION_CLAIMS_KEY, JSON.stringify(updated));
+  window.dispatchEvent(new CustomEvent('smartsort_subscription_claims_changed'));
+  return newClaim;
+}
+
+export function updateSubscriptionClaimStatus(id: string, status: 'verified' | 'unresolved'): void {
+  const claims = getAllSubscriptionClaims();
+  const updated = claims.map(c => c.id === id ? { ...c, status } : c);
+  localStorage.setItem(SUBSCRIPTION_CLAIMS_KEY, JSON.stringify(updated));
+  window.dispatchEvent(new CustomEvent('smartsort_subscription_claims_changed'));
+}
+
+export function incrementClaimReminder(id: string): void {
+  const claims = getAllSubscriptionClaims();
+  const updated = claims.map(c => c.id === id ? { ...c, reminder_sent_count: (c.reminder_sent_count || 0) + 1 } : c);
+  localStorage.setItem(SUBSCRIPTION_CLAIMS_KEY, JSON.stringify(updated));
+  window.dispatchEvent(new CustomEvent('smartsort_subscription_claims_changed'));
+}
 
 /**
  * Loads all loan applications from persistent local storage.

@@ -587,24 +587,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         const failedTries = getFailedBiometricAttempts();
         setBioFailedAttempts(failedTries);
 
-        if (bioEnabled) {
-          // LAYER 1: Check biometric_enabled == true
-          if (failedTries >= MAX_BIOMETRIC_ATTEMPTS) {
-            // Security Rule: After 5 failed fingerprint tries, force PIN
-            setPinError(
-              language === 'en'
-                ? '5 failed fingerprint tries. Please enter your 4-digit fallback PIN.'
-                : 'Majaribio 5 ya alama ya vidole yameshindikana. Weka PIN yako ya tarakimu 4.'
-            );
-            setAuthMode('pin');
-          } else {
-            setAuthMode('biometric_lock');
-          }
-        } else if (effectiveUser.pin_hash || storedPinHash) {
-          setAuthMode('pin');
-        } else {
-          setAuthMode('login');
-        }
+        // 4-digit unlock PIN is the default screen when locked/returning
+        setAuthMode('pin');
       } else {
         // Initial setup default (or forced clean re-login)
         setAuthMode('login');
@@ -2013,7 +1997,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             />
 
             <div className="pt-2 flex flex-col gap-2 text-center">
-              {isBiometricEnabled() && bioFailedAttempts < MAX_BIOMETRIC_ATTEMPTS && (
+              {deviceSupportsBio && isBiometricEnabled() && bioFailedAttempts < MAX_BIOMETRIC_ATTEMPTS && (
                 <button
                   type="button"
                   onClick={() => {
@@ -2144,7 +2128,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             </Button>
 
             {/* Layer 1 Offline Biometric Unlock Option if enabled */}
-            {isBiometricEnabled() && bioFailedAttempts < MAX_BIOMETRIC_ATTEMPTS && (
+            {deviceSupportsBio && isBiometricEnabled() && bioFailedAttempts < MAX_BIOMETRIC_ATTEMPTS && (
               <button
                 type="button"
                 onClick={() => {
@@ -2254,7 +2238,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     type="text"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
-                    placeholder="e.g. Peter Mwangi"
+                    placeholder="e.g. John Kamau"
                     className="w-full h-11 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
                     autoFocus
                   />
@@ -2303,7 +2287,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     type="text"
                     value={username}
                     onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, ''))}
-                    placeholder="e.g. petermwangi"
+                    placeholder="e.g. johnkamau"
                     className="w-full h-10 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
                   />
                   <span className="text-[10px] text-slate-400">
@@ -2319,7 +2303,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="peter@gmail.com"
+                    placeholder="johnkamau@gmail.com"
                     className="w-full h-10 px-3 text-sm font-semibold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
                   />
                 </div>
