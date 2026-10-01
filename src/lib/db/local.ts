@@ -683,18 +683,33 @@ export async function recalculateStockFromLedger(productId?: string): Promise<vo
     });
   } else {
     const allMovements = await db.stock_movements.toArray();
-    const movements = allMovements.filter((m) => m.shop_id === shop.shop_id);
+    const movements = allMovements.filter((m) => !m.shop_id || m.shop_id === shop.shop_id);
     const map = new Map<string, number>();
     for (const m of movements) {
       map.set(m.product_id, (map.get(m.product_id) || 0) + m.delta);
     }
     const allProducts = await db.products.toArray();
-    const products = allProducts.filter((p) => p.shop_id === shop.shop_id);
+    const products = allProducts.filter((p) => !p.deleted_at && (!p.shop_id || p.shop_id === shop.shop_id));
+
+    const existingStocks = await db.product_stock.toArray();
+    const existingMap = new Map<string, number>();
+    for (const es of existingStocks) {
+      existingMap.set(es.product_id, es.qty);
+    }
+
     for (const p of products) {
-      const qty = map.get(p.id) || 0;
+      let qty = 0;
+      if (map.has(p.id)) {
+        qty = map.get(p.id)!;
+      } else if ((p as any).stock !== undefined && (p as any).stock !== null) {
+        qty = Number((p as any).stock);
+      } else if (existingMap.has(p.id)) {
+        qty = existingMap.get(p.id)!;
+      }
+
       await db.product_stock.put({
         product_id: p.id,
-        shop_id: shop.shop_id,
+        shop_id: p.shop_id || shop.shop_id,
         qty,
         updated_at: now,
       });

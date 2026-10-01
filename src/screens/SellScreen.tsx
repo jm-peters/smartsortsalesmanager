@@ -105,6 +105,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   onNavigateToStock,
   onNavigateToDeni,
 }) => {
+  const isOwner = userRole === 'owner';
   const t = translations[language];
   const isEn = language === 'en';
   const [searchQuery, setSearchQuery] = useState('');
@@ -200,7 +201,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
       if (!cleanCode) return;
 
       const existingProduct = await db.products
-        .filter((p) => p.deleted_at === null && Boolean(p.barcode) && p.barcode!.trim().toLowerCase() === cleanCode.toLowerCase())
+        .filter((p) => !p.deleted_at && Boolean(p.barcode) && p.barcode!.trim().toLowerCase() === cleanCode.toLowerCase())
         .first();
 
       if (existingProduct) {
@@ -208,11 +209,24 @@ export const SellScreen: React.FC<SellScreenProps> = ({
         playSuccessBeep();
         setScanSuccessToast(
           isEn
-            ? `✅ ${existingProduct.name} (Qty +1) - ${formatKES(existingProduct.selling_price)} added!`
-            : `✅ ${existingProduct.name} (Idadi +1) - Bei ${formatKES(existingProduct.selling_price)} imeongezwa!`
+            ? `✅ ${existingProduct.name} (+1) · ${formatKES(existingProduct.selling_price)} added to cart!`
+            : `✅ ${existingProduct.name} (+1) · ${formatKES(existingProduct.selling_price)} imeongezwa!`
         );
         setTimeout(() => setScanSuccessToast(null), 3500);
       } else {
+        // If logged in as attendant, strictly selling only: DO NOT create/register products
+        if (!isOwner) {
+          playSuccessBeep();
+          setScanSuccessToast(
+            isEn
+              ? `⚠️ Product with barcode "${cleanCode}" not in shop catalog. Please ask the shop owner to add it.`
+              : `⚠️ Msimbo "${cleanCode}" haupo dukani. Muombe mwenye duka auongeze kwenye mfumo.`
+          );
+          setTimeout(() => setScanSuccessToast(null), 4000);
+          return;
+        }
+
+        // Owner only: check global match or open learning modal
         const globalMatch = await lookupGlobalProductByBarcode(cleanCode);
         if (globalMatch) {
           const shop = await getShopMeta();
@@ -252,8 +266,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           playSuccessBeep();
           setScanSuccessToast(
             isEn
-              ? `🌐 Global match! Added ${localProd.name} - ${formatKES(localProd.selling_price)}`
-              : `🌐 Bidhaa ya kimataifa! Imeongeza ${localProd.name} - ${formatKES(localProd.selling_price)}`
+              ? `🌐 Global match! Added ${localProd.name} · ${formatKES(localProd.selling_price)}`
+              : `🌐 Bidhaa ya kimataifa! Imeongeza ${localProd.name} · ${formatKES(localProd.selling_price)}`
           );
           setTimeout(() => setScanSuccessToast(null), 4000);
         } else {
@@ -262,7 +276,9 @@ export const SellScreen: React.FC<SellScreenProps> = ({
       }
     } catch (err) {
       console.error('Barcode lookup error:', err);
-      setUnrecognizedBarcode(barcode);
+      if (isOwner) {
+        setUnrecognizedBarcode(barcode);
+      }
     }
   };
 
@@ -280,7 +296,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
 
   // Live queries from Dexie
   const products = useLiveQuery(
-    () => db.products.filter((p) => p.is_active && p.deleted_at === null).toArray(),
+    () => db.products.filter((p) => p.is_active && !p.deleted_at).toArray(),
     []
   ) || [];
 
@@ -297,7 +313,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   ) || [];
 
   const customers = useLiveQuery(
-    () => db.customers.filter((c) => c.deleted_at === null).toArray(),
+    () => db.customers.filter((c) => !c.deleted_at).toArray(),
     []
   ) || [];
 
@@ -2056,16 +2072,20 @@ export const SellScreen: React.FC<SellScreenProps> = ({
         </div>
       )}
 
-      {/* Barcode Scanner Modal */}
+      {/* Barcode Scanner Modal (Continuous Multi-Scan Mode) */}
       <BarcodeScannerModal
         isOpen={isBarcodeScannerOpen}
         onClose={() => setIsBarcodeScannerOpen(false)}
         onBarcodeScanned={handleScannedBarcode}
         language={language}
+        continuous={true}
+        cartItemCount={cart.reduce((acc, it) => acc + it.qty, 0)}
+        cartTotalKES={cartTotal}
+        lastScannedMessage={scanSuccessToast}
       />
 
-      {/* New Product Barcode Registration Modal ("New product, what's this?") */}
-      {unrecognizedBarcode && (
+      {/* New Product Barcode Registration Modal (Owner Only) */}
+      {isOwner && unrecognizedBarcode && (
         <NewProductBarcodeModal
           isOpen={Boolean(unrecognizedBarcode)}
           onClose={() => setUnrecognizedBarcode(null)}

@@ -147,7 +147,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
 
   // Live query from Dexie
   const products = useLiveQuery(
-    () => db.products.filter((p) => p.deleted_at === null).toArray(),
+    () => db.products.filter((p) => !p.deleted_at).toArray(),
     []
   ) || [];
 

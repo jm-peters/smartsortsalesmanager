@@ -128,11 +128,11 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
 
   const allItems = useLiveQuery(() => db.sale_items.toArray(), []) || [];
   const allExpenses = useLiveQuery(
-    () => db.expenses.filter((e) => e.deleted_at === null).toArray(),
+    () => db.expenses.filter((e) => !e.deleted_at).toArray(),
     []
   ) || [];
 
-  const allProducts = useLiveQuery(() => db.products.filter((p) => p.deleted_at === null).toArray(), []) || [];
+  const allProducts = useLiveQuery(() => db.products.filter((p) => !p.deleted_at).toArray(), []) || [];
   const allStock = useLiveQuery(() => db.product_stock.toArray(), []) || [];
   const allDebts = useLiveQuery(() => db.debts.toArray(), []) || [];
 
