@@ -232,11 +232,15 @@ export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps>
                   </div>
                 </div>
 
-                {/* Subtitle row: Time & Item count */}
-                <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1">
-                  <div className="flex items-center gap-1 text-slate-400">
-                    <Clock className="w-3 h-3" />
+                {/* Subtitle row: Time, Cashier attribution & Item count */}
+                <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1 flex-wrap gap-1">
+                  <div className="flex items-center gap-1.5 text-slate-500">
+                    <Clock className="w-3 h-3 text-slate-400" />
                     <span>{formatTime(sale.created_at)}</span>
+                    <span className="text-slate-300">•</span>
+                    <span className="font-semibold text-slate-700">
+                      👤 {sale.cashier_name || sale.created_by_name || (sale.created_by_role === 'attendant' ? (isEn ? 'Attendant' : 'Mhudumu') : (isEn ? 'Owner' : 'Mwenyewe'))}
+                    </span>
                   </div>
 
                   <span className="font-semibold text-slate-600">

@@ -96,16 +96,15 @@ const SUBSCRIPTION_CLAIMS_KEY = 'smartsort_subscription_claims_v1';
 const SHOP_LOAN_STATES_KEY = 'smartsort_shop_loan_states_v1';
 
 /**
- * Checks whether the current user/shop belongs to the authorized system administrator (peterngecu001@gmail.com).
+ * Checks whether the current user belongs strictly to the authorized system administrator (peterngecu001@gmail.com).
  */
 export function isAdminUser(
   user?: { email?: string | null; username?: string | null } | null,
   shop?: { contact_email?: string | null } | null
 ): boolean {
   const uEmail = (user?.email || '').trim().toLowerCase();
-  const uName = (user?.username || '').trim().toLowerCase();
   const sEmail = (shop?.contact_email || '').trim().toLowerCase();
-  if (uEmail === ADMIN_EMAIL || sEmail === ADMIN_EMAIL || uName === 'peterngecu') {
+  if (uEmail === ADMIN_EMAIL || sEmail === ADMIN_EMAIL) {
     return true;
   }
   try {
@@ -116,9 +115,6 @@ export function isAdminUser(
         if ((parsed?.email || '').trim().toLowerCase() === ADMIN_EMAIL) {
           return true;
         }
-      }
-      if (localStorage.getItem('smartsort_admin_unlocked') === 'true') {
-        return true;
       }
     }
   } catch {
@@ -658,7 +654,7 @@ export async function syncLoansAndShopsWithCloud(currentShop?: ShopMeta | null):
         shop_name: shop.shop_name,
         owner_name: shop.owner_name,
         phone: shop.phone || '0712345678',
-        email: shop.contact_email,
+        email: shop.contact_email || undefined,
         town: shop.town || 'Nairobi',
         county: shop.county || 'Nairobi',
         amount: shop.active_loan_amount,
@@ -688,7 +684,7 @@ export async function syncLoansAndShopsWithCloud(currentShop?: ShopMeta | null):
       phone: shop.phone || '',
       town: shop.town || 'Nairobi',
       county: shop.county || 'Nairobi',
-      contact_email: shop.contact_email,
+      contact_email: shop.contact_email || undefined,
       loan_limit: st?.loan_limit !== undefined ? st.loan_limit : (shop.loan_limit ?? 0),
       active_loan_status: st?.active_loan_status || shop.active_loan_status || 'none',
       active_loan_amount: st?.active_loan_amount ?? shop.active_loan_amount ?? 0,

@@ -102,6 +102,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
 
   const handleStockScannedBarcode = async (code: string) => {
+    if (!isOwner) return;
     const cleanCode = code.trim().toLowerCase();
     const found = products.find((p) => p.barcode && p.barcode.toLowerCase() === cleanCode);
     if (found) {
@@ -631,70 +632,92 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="relative group">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsBarcodeScannerOpen(true)}
-              className="flex items-center gap-1.5 border-emerald-600 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-bold text-xs cursor-pointer"
-              title={isEn ? 'Scan products with global barcodes' : 'Skani bidhaa zenye barcode za kimataifa'}
-            >
-              <Camera className="w-4 h-4 text-emerald-600" />
-              {isEn ? 'Scan Stock' : 'Skani Stock'}
-            </Button>
-            {/* Tooltip */}
-            <div className="absolute right-0 top-full mt-1.5 hidden group-hover:block z-30 w-64 p-2.5 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl leading-relaxed">
-              💡 {isEn ? 'Ideal for products with global barcodes (EAN/UPC). Scans instantly and auto-populates names across shops while working 100% offline!' : 'Inafaa kwa bidhaa zenye barcode za kimataifa. Inatambua majina kiotomatiki nje ya mtandao!'}
-            </div>
-          </div>
+          {isOwner && (
+            <>
+              <div className="relative group">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsBarcodeScannerOpen(true)}
+                  className="flex items-center gap-1.5 border-emerald-600 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-bold text-xs cursor-pointer"
+                  title={isEn ? 'Scan products with global barcodes' : 'Skani bidhaa zenye barcode za kimataifa'}
+                >
+                  <Camera className="w-4 h-4 text-emerald-600" />
+                  {isEn ? 'Scan Stock' : 'Skani Stock'}
+                </Button>
+                {/* Tooltip */}
+                <div className="absolute right-0 top-full mt-1.5 hidden group-hover:block z-30 w-64 p-2.5 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl leading-relaxed">
+                  💡 {isEn ? 'Ideal for products with global barcodes (EAN/UPC). Scans instantly and auto-populates names across shops while working 100% offline!' : 'Inafaa kwa bidhaa zenye barcode za kimataifa. Inatambua majina kiotomatiki nje ya mtandao!'}
+                </div>
+              </div>
 
-          <Button
-            variant="gradient"
-            size="sm"
-            onClick={() => openAddModal()}
-            className="flex items-center gap-1.5 shadow-sm text-xs font-bold cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            {isEn ? 'Add Product' : 'Ongeza'}
-          </Button>
+              <Button
+                variant="gradient"
+                size="sm"
+                onClick={() => openAddModal()}
+                className="flex items-center gap-1.5 shadow-sm text-xs font-bold cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                {isEn ? 'Add Product' : 'Ongeza'}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Feature Navigation Action Strip */}
-      <div className="p-3 bg-slate-50 border-b border-slate-200 grid grid-cols-3 gap-2">
-        <button
-          type="button"
-          onClick={() => setIsRestockModalOpen(true)}
-          className="p-2.5 bg-white border border-slate-200 rounded-xl text-center active:bg-slate-100 transition shadow-xs flex flex-col items-center gap-1"
-        >
-          <ShoppingBag className="w-5 h-5 text-emerald-600" />
-          <span className="text-[11px] font-bold text-slate-800">
-            {isEn ? 'Restock List' : 'Orodha ya Manunuzi'}
-          </span>
-        </button>
+      {/* Feature Navigation Action Strip (Owner only) or Attendant View Banner */}
+      {isOwner ? (
+        <div className="p-3 bg-slate-50 border-b border-slate-200 grid grid-cols-3 gap-2">
+          <button
+            type="button"
+            onClick={() => setIsRestockModalOpen(true)}
+            className="p-2.5 bg-white border border-slate-200 rounded-xl text-center active:bg-slate-100 transition shadow-xs flex flex-col items-center gap-1 cursor-pointer"
+          >
+            <ShoppingBag className="w-5 h-5 text-emerald-600" />
+            <span className="text-[11px] font-bold text-slate-800">
+              {isEn ? 'Restock List' : 'Orodha ya Manunuzi'}
+            </span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setIsStockTakeModalOpen(true)}
-          className="p-2.5 bg-white border border-slate-200 rounded-xl text-center active:bg-slate-100 transition shadow-xs flex flex-col items-center gap-1"
-        >
-          <ClipboardList className="w-5 h-5 text-blue-600" />
-          <span className="text-[11px] font-bold text-slate-800">
-            {isEn ? 'Stock Count' : 'Hesabu ya Stock'}
-          </span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setIsStockTakeModalOpen(true)}
+            className="p-2.5 bg-white border border-slate-200 rounded-xl text-center active:bg-slate-100 transition shadow-xs flex flex-col items-center gap-1 cursor-pointer"
+          >
+            <ClipboardList className="w-5 h-5 text-blue-600" />
+            <span className="text-[11px] font-bold text-slate-800">
+              {isEn ? 'Stock Count' : 'Hesabu ya Stock'}
+            </span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setIsBulkAddModalOpen(true)}
-          className="p-2.5 bg-white border border-slate-200 rounded-xl text-center active:bg-slate-100 transition shadow-xs flex flex-col items-center gap-1"
-        >
-          <FileSpreadsheet className="w-5 h-5 text-purple-600" />
-          <span className="text-[11px] font-bold text-slate-800">
-            {isEn ? 'Bulk Import' : 'Weka Nyingi (Bulk)'}
-          </span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => setIsBulkAddModalOpen(true)}
+            className="p-2.5 bg-white border border-slate-200 rounded-xl text-center active:bg-slate-100 transition shadow-xs flex flex-col items-center gap-1 cursor-pointer"
+          >
+            <FileSpreadsheet className="w-5 h-5 text-purple-600" />
+            <span className="text-[11px] font-bold text-slate-800">
+              {isEn ? 'Bulk Import' : 'Weka Nyingi (Bulk)'}
+            </span>
+          </button>
+        </div>
+      ) : (
+        <div className="p-3 bg-blue-50/80 border-b border-blue-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-base">🔒</span>
+            <div>
+              <span className="text-xs font-bold text-blue-950 block">
+                {isEn ? 'Attendant View (Read-Only Inventory)' : 'Hali ya Mhudumu (Kutazama Tu Stoo)'}
+              </span>
+              <span className="text-[10px] text-blue-800">
+                {isEn
+                  ? 'Viewing live shop stock & prices. Creating products or increasing stock is reserved for the shop owner.'
+                  : 'Unatazama idadi na bei za duka. Kuongeza au kubadilisha stoo kunafanywa na mwenye duka pekee.'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Restock Success Feedback Toast */}
       {restockNotice && (
@@ -726,13 +749,15 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                     : `Zinazoisha Dukani (${lowStockProducts.length})`}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsRestockModalOpen(true)}
-                className="text-[11px] font-bold text-emerald-700 underline"
-              >
-                {isEn ? 'Open Restock List' : 'Fungua Orodha'}
-              </button>
+              {isOwner && (
+                <button
+                  type="button"
+                  onClick={() => setIsRestockModalOpen(true)}
+                  className="text-[11px] font-bold text-emerald-700 underline cursor-pointer"
+                >
+                  {isEn ? 'Open Restock List' : 'Fungua Orodha'}
+                </button>
+              )}
             </div>
 
             <div className="flex gap-2 overflow-x-auto no-scrollbar">
@@ -742,9 +767,14 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => setRestockingProduct(p)}
-                    className="flex-shrink-0 px-2.5 py-1.5 bg-white hover:bg-emerald-50 rounded-lg border border-amber-200 hover:border-emerald-300 text-xs shadow-2xs flex items-center gap-1.5 transition active:scale-95 text-left"
-                    title={isEn ? `Tap to restock ${p.name}` : `Gusa kuongeza ${p.name}`}
+                    onClick={() => isOwner && setRestockingProduct(p)}
+                    disabled={!isOwner}
+                    className={`flex-shrink-0 px-2.5 py-1.5 bg-white rounded-lg border text-xs shadow-2xs flex items-center gap-1.5 transition text-left ${
+                      isOwner
+                        ? 'hover:bg-emerald-50 border-amber-200 hover:border-emerald-300 active:scale-95 cursor-pointer'
+                        : 'border-amber-200 cursor-default'
+                    }`}
+                    title={isOwner ? (isEn ? `Tap to restock ${p.name}` : `Gusa kuongeza ${p.name}`) : p.name}
                   >
                     <span className="font-semibold text-slate-800">
                       {p.name}
@@ -756,9 +786,11 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                     >
                       {s} {p.unit}
                     </span>
-                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1 rounded">
-                      +
-                    </span>
+                    {isOwner && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1 rounded">
+                        +
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -799,13 +831,27 @@ export const StockScreen: React.FC<StockScreenProps> = ({
 
         {/* Product List or First Product Onboarding Guide */}
         {products.length === 0 ? (
-          <FirstProductGuide
-            onOpenAddProduct={openAddModal}
-            onSeedSampleCatalog={async () => {
-              await seedKenyanCatalog(true);
-            }}
-            language={language}
-          />
+          isOwner ? (
+            <FirstProductGuide
+              onOpenAddProduct={openAddModal}
+              onSeedSampleCatalog={async () => {
+                await seedKenyanCatalog(true);
+              }}
+              language={language}
+            />
+          ) : (
+            <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 space-y-2">
+              <span className="text-3xl block mb-2">📦</span>
+              <div className="font-bold text-sm text-slate-800">
+                {isEn ? 'No products in shop inventory' : 'Hakuna bidhaa kwenye duka bado'}
+              </div>
+              <p className="text-xs text-slate-500">
+                {isEn
+                  ? 'Products and stock items added by the shop owner will appear here.'
+                  : 'Bidhaa na stoo zikiongezwa na mwenye duka zitaonekana hapa.'}
+              </p>
+            </div>
+          )
         ) : filteredProducts.length === 0 ? (
           <div className="p-8 text-center bg-white rounded-2xl border border-slate-200">
             <span className="text-3xl block mb-2">🔍</span>
@@ -894,25 +940,29 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                       )}
                     </div>
 
-                    {/* Single Product Restock Quick Button */}
-                    <button
-                      type="button"
-                      onClick={() => setRestockingProduct(p)}
-                      className="h-8 px-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 flex items-center gap-1 text-xs font-bold transition active:scale-95 shadow-2xs"
-                      title={isEn ? `Restock ${p.name}` : `Ongeza mzigo wa ${p.name}`}
-                    >
-                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                      <span className="hidden sm:inline">{isEn ? 'Restock' : 'Ongeza'}</span>
-                    </button>
+                    {/* Single Product Restock Quick Button & Edit (Owner Only) */}
+                    {isOwner && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setRestockingProduct(p)}
+                          className="h-8 px-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 flex items-center gap-1 text-xs font-bold transition active:scale-95 shadow-2xs cursor-pointer"
+                          title={isEn ? `Restock ${p.name}` : `Ongeza mzigo wa ${p.name}`}
+                        >
+                          <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                          <span className="hidden sm:inline">{isEn ? 'Restock' : 'Ongeza'}</span>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(p)}
-                      className="p-2 text-slate-400 hover:text-slate-600 active:bg-slate-100 rounded-lg transition"
-                      aria-label={`Hariri ${p.name}`}
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(p)}
+                          className="p-2 text-slate-400 hover:text-slate-600 active:bg-slate-100 rounded-lg transition cursor-pointer"
+                          aria-label={`Hariri ${p.name}`}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               );

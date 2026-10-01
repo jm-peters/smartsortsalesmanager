@@ -50,6 +50,7 @@ import {
 import { NumPad } from '../components/NumPad';
 import { Button } from '../components/Button';
 import { translations, type Language } from '../lib/i18n';
+import { syncEngine } from '../lib/sync/engine';
 
 interface AuthScreenProps {
   onAuthenticated: (user: ShopUser, shop: Shop) => void;
@@ -347,6 +348,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       setTempUserForPin({ user: newAttendantUser, shop });
       setIsPromptingEnableBio(true);
       setIsAttendantInvite(false); // Done with invite step
+      void syncEngine.triggerSync();
     } catch (err: any) {
       setAttendantError(err?.message || 'Failed to complete registration. Please try again.');
     } finally {
@@ -664,6 +666,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       return;
     }
 
+    void syncEngine.triggerSync();
     onAuthenticated(loggedInUser, loggedInShop);
   };
 

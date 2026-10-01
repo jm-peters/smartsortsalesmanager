@@ -18,6 +18,7 @@ export interface ReceiptSummaryOptions {
   paymentMethod: string;
   customerName?: string | null;
   customerPhone?: string | null;
+  cashierName?: string | null;
   tillNumber?: string | null;
   receiptFooter?: string | null;
   language?: Language;
@@ -61,6 +62,7 @@ export function generateReceiptSummaryText(options: ReceiptSummaryOptions): stri
     total,
     paymentMethod,
     customerName,
+    cashierName,
     tillNumber,
     receiptFooter,
     language = 'en',
@@ -87,8 +89,12 @@ export function generateReceiptSummaryText(options: ReceiptSummaryOptions): stri
   lines.push(`🧾 *${isEn ? 'RECEIPT' : 'RISITI'} #${saleNo}*`);
   lines.push(`📅 ${dateStr}, ${timeStr}`);
 
+  if (cashierName && cashierName.trim()) {
+    lines.push(`👤 *${isEn ? 'Served by' : 'Mhudumu'}:* ${cashierName.trim()}`);
+  }
+
   if (customerName && customerName.trim()) {
-    lines.push(`👤 *${isEn ? 'Customer' : 'Mteja'}:* ${customerName.trim()}`);
+    lines.push(`👥 *${isEn ? 'Customer' : 'Mteja'}:* ${customerName.trim()}`);
   }
 
   lines.push('─────────────────────────');

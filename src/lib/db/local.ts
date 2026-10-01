@@ -86,6 +86,9 @@ export interface SaleHeader {
   change_seq?: number;
   device_id: string;
   created_by: string;
+  cashier_name?: string;
+  created_by_name?: string;
+  created_by_role?: string;
   cash_session_id?: string | null;
 }
 
@@ -591,7 +594,7 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
 
   // Sync directly to Supabase shops table if online, or queue to outbox if offline
   try {
-    const payload = {
+    const payload: Record<string, unknown> = {
       id: updated.shop_id,
       shop_name: updated.shop_name,
       owner_name: updated.owner_name,
@@ -614,8 +617,6 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
       plan_status: updated.plan_status,
       subscription_paid_until: updated.subscription_paid_until,
       preferred_payment_method: updated.preferred_payment_method,
-      loyalty_enabled: updated.loyalty_enabled,
-      loyalty_points_per_100_kes: updated.loyalty_points_per_100_kes,
       updated_at: now,
     };
 
@@ -623,7 +624,7 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
       id: updated.shop_id,
       table: 'shops',
       op: 'update',
-      payload: payload as unknown as Record<string, unknown>,
+      payload,
       attempts: 0,
       next_attempt_at: now,
     });
@@ -1217,6 +1218,11 @@ export async function recordSale(saleData: {
     }
   }
 
+  const activeUser = await getShopUser();
+  const cashierName = activeUser?.name || activeUser?.username || shop.owner_name || 'Cashier';
+  const creatorRole = activeUser?.role || 'owner';
+  const creatorId = activeUser?.id || shop.user_id;
+
   const saleHeader: SaleHeader = {
     id: saleId,
     shop_id: shop.shop_id,
@@ -1233,7 +1239,10 @@ export async function recordSale(saleData: {
     created_at: now,
     updated_at: now,
     device_id: deviceId,
-    created_by: shop.user_id,
+    created_by: creatorId,
+    cashier_name: cashierName,
+    created_by_name: cashierName,
+    created_by_role: creatorRole,
     cash_session_id: activeSession.id,
   };
 

@@ -40,6 +40,8 @@ import {
   updateLoanApplicationStatus,
   getAllEligibleShopAlerts,
   adminGrantLimitToShop,
+  isAdminUser,
+  ADMIN_EMAIL,
   type LoanApplication,
   type EligibleShopAlert,
 } from '../lib/loans';
@@ -97,6 +99,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
   // Load Active Shop User info for admin verification
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const isPeterNgecu = isAdminUser(currentUser);
   const [biometricsEnabled, setBiometricsEnabled] = useState(false);
 
   // Real live database metrics for Admin Dashboard
@@ -190,10 +193,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       }
     }
 
-    if (currentUser?.email === 'peterngecu001@gmail.com') {
+    if (isPeterNgecu) {
       loadRealMetrics();
     }
-  }, [currentUser, loadTrigger]);
+  }, [currentUser, loadTrigger, isPeterNgecu]);
 
   // Load storage, sync subscriptions, and active user info
   useEffect(() => {
@@ -536,7 +539,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </div>
 
         {/* System-Wide Admin Dashboard (Strictly visible only to peterngecu001@gmail.com) */}
-        {currentUser?.email === 'peterngecu001@gmail.com' && (
+        {isPeterNgecu && (
           <div className="p-4 bg-slate-950 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
               <div className="flex items-center gap-2">
@@ -794,54 +797,44 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         )}
 
-        {/* Shop Info Card */}
-        <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
-          <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
-            <Store className="w-4 h-4 text-emerald-600" />
-            <span>{isEn ? 'Shop Information' : 'Taarifa za Duka'}</span>
-          </div>
+        {/* Shop Information (Shop Configuration) */}
+        {isOwner ? (
+          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
+            <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
+              <Store className="w-4 h-4 text-emerald-600" />
+              <span>{isEn ? 'Shop Information & Configuration' : 'Taarifa na Mipangilio ya Duka'}</span>
+            </div>
 
-          <div>
-            <label className="block text-[11px] font-bold text-slate-600 mb-1">
-              {isEn ? 'Shop Name:' : 'Jina la Duka:'}
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => isOwner && setName(e.target.value)}
-              readOnly={!isOwner}
-              className={`w-full h-11 px-3 text-sm font-semibold border rounded-xl focus:outline-none ${
-                isOwner
-                  ? 'bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500'
-                  : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
-              }`}
-            />
-          </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                {isEn ? 'Shop Name:' : 'Jina la Duka:'}
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full h-11 px-3 text-sm font-semibold border rounded-xl bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
 
-          <div>
-            <label className="block text-[11px] font-bold text-slate-600 mb-1">
-              {isEn ? 'Your Shop M-Pesa Till / Paybill Number:' : 'Nambari ya Till / Paybill ya Duka Lako:'}
-            </label>
-            <input
-              type="text"
-              value={till}
-              onChange={(e) => isOwner && setTill(e.target.value)}
-              readOnly={!isOwner}
-              placeholder={isEn ? 'e.g. 542190 or 123456' : 'mfano 542190 au 123456'}
-              className={`w-full h-11 px-3 text-sm font-semibold border rounded-xl focus:outline-none ${
-                isOwner
-                  ? 'bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500'
-                  : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
-              }`}
-            />
-            <p className="text-[10px] text-slate-500 mt-1 font-medium">
-              {isEn
-                ? 'Customers will send their payments to this Till number when paying for goods.'
-                : 'Wateja watatuma malipo yao kwenye nambari hii ya Till wanaponunua bidhaa.'}
-            </p>
-          </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                {isEn ? 'Your Shop M-Pesa Till / Paybill Number:' : 'Nambari ya Till / Paybill ya Duka Lako:'}
+              </label>
+              <input
+                type="text"
+                value={till}
+                onChange={(e) => setTill(e.target.value)}
+                placeholder={isEn ? 'e.g. 542190 or 123456' : 'mfano 542190 au 123456'}
+                className="w-full h-11 px-3 text-sm font-semibold border rounded-xl bg-slate-50 border-slate-300 focus:bg-white focus:border-emerald-500 focus:outline-none"
+              />
+              <p className="text-[10px] text-slate-500 mt-1 font-medium">
+                {isEn
+                  ? 'Customers will send their payments to this Till number when paying for goods.'
+                  : 'Wateja watatuma malipo yao kwenye nambari hii ya Till wanaponunua bidhaa.'}
+              </p>
+            </div>
 
-          {isOwner ? (
             <Button
               variant="gradient"
               size="md"
@@ -850,14 +843,35 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               onClick={handleSaveShopInfo}
             >
               <Check className="w-4 h-4 mr-1" />
-              {isEn ? 'Save Shop Information' : 'Hifadhi Taarifa za Duka'}
+              {isEn ? 'Save Shop Configuration' : 'Hifadhi Mipangilio ya Duka'}
             </Button>
-          ) : (
-            <p className="text-[10px] text-slate-400 font-bold text-center italic pt-1">
-              {isEn ? 'Only shop owners can edit shop information.' : 'Wamiliki wa duka pekee wanaweza kuhariri taarifa.'}
+          </div>
+        ) : (
+          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 shadow-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
+                <Store className="w-4 h-4 text-emerald-600" />
+                <span>{isEn ? 'Shop Information' : 'Taarifa za Duka'}</span>
+              </div>
+              <span className="text-[10px] font-bold bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full">
+                {isEn ? 'Read-Only' : 'Kutazama Tu'}
+              </span>
+            </div>
+            <div className="text-xs text-slate-700 space-y-1 bg-white p-3 rounded-xl border border-slate-200/80">
+              <div className="flex justify-between">
+                <span className="text-slate-500">{isEn ? 'Shop Name:' : 'Jina la Duka:'}</span>
+                <span className="font-bold text-slate-900">{name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">{isEn ? 'M-Pesa Till / Paybill:' : 'Till / Paybill:'}</span>
+                <span className="font-bold text-slate-900">{till || '—'}</span>
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold text-center italic pt-0.5">
+              {isEn ? 'Shop configuration can only be modified by the shop owner.' : 'Mipangilio ya duka inabadilishwa na mwenye duka pekee.'}
             </p>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Staff Role Switcher (§8.F) */}
         <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
@@ -1005,7 +1019,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </div>
           )}
 
-          {syncStatus.deadLetterCount > 0 && (
+          {isOwner && syncStatus.deadLetterCount > 0 && (
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
               <div className="text-[11px] text-amber-900 font-semibold leading-tight">
                 {isEn
@@ -1110,7 +1124,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               : 'Miamala ya duka lako inahifadhiwa moja kwa moja kwenye simu yako. Unaweza kupakua nakala ya backup ya JSON wakati wowote bila kuathiri data zilizopo.'}
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className={`grid gap-2 ${isOwner ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'}`}>
             <button
               type="button"
               onClick={handleExportBackup}
@@ -1120,16 +1134,18 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               {isEn ? 'Download Backup (.json)' : 'Pakua Nakala (Backup .json)'}
             </button>
 
-            <label className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer text-center">
-              <Upload className="w-4 h-4 text-emerald-600" />
-              <span>{isEn ? 'Restore Backup (.json)' : 'Rejesha Nakala (Import .json)'}</span>
-              <input
-                type="file"
-                accept=".json"
-                onChange={handleImportBackup}
-                className="hidden"
-              />
-            </label>
+            {isOwner && (
+              <label className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer text-center">
+                <Upload className="w-4 h-4 text-emerald-600" />
+                <span>{isEn ? 'Restore Backup (.json)' : 'Rejesha Nakala (Import .json)'}</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleImportBackup}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
         </div>
 

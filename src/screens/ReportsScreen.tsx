@@ -1085,15 +1085,24 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                             )}
                           </div>
 
-                          <div className="text-xs text-slate-500 mt-0.5">
-                            {new Date(sale.created_at).toLocaleString('en-KE', {
-                              day: 'numeric',
-                              month: 'short',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                          <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                            <span>
+                              📅 {new Date(sale.created_at).toLocaleString('en-KE', {
+                                day: 'numeric',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                            <span className="text-slate-300">•</span>
+                            <span className="font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
+                              🏷️ {isEn ? 'Served by:' : 'Mhudumu:'}{' '}
+                              <strong>
+                                {sale.cashier_name || sale.created_by_name || (sale.created_by_role === 'attendant' ? (isEn ? 'Attendant' : 'Mhudumu') : (isEn ? 'Owner' : 'Mwenyewe'))}
+                              </strong>
+                            </span>
                             {cust && (
-                              <span className="font-bold text-slate-700 ml-1.5">
+                              <span className="font-bold text-slate-700">
                                 • 👤 {cust.name}
                               </span>
                             )}

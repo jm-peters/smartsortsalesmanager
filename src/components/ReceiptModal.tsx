@@ -60,6 +60,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     paymentMethod: sale.payment_method,
     customerName,
     customerPhone,
+    cashierName: sale.cashier_name || sale.created_by_name || undefined,
     tillNumber,
     receiptFooter,
     language,

@@ -112,6 +112,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onNavigateTab,
 }) => {
   const t = translations[language];
+  const isEn = language === 'en';
   const isPeterNgecu = isAdminUser(user, shop);
 
   // Repayment & Instalments plan helper
@@ -445,19 +446,22 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         {/* Avatar + Shop Identity Container */}
         <div className="px-4 pb-4">
           <div className="flex items-end justify-between -mt-11 mb-2">
-            {/* Shop Avatar (88px, chosen emoji on soft white circle, tap to change) */}
+            {/* Shop Avatar (88px, chosen emoji on soft white circle, tap to change for owner) */}
             <button
               type="button"
-              onClick={() => setIsEmojiPickerOpen(true)}
-              className={`relative w-[84px] h-[84px] rounded-3xl bg-white border-4 border-white shadow-xl flex items-center justify-center text-4xl cursor-pointer transition transform active:scale-95 ${
-                saveFlashElement === 'avatar' ? 'ring-4 ring-emerald-400 scale-105' : ''
-              }`}
-              title={t.chooseAvatar}
+              onClick={() => isOwner && setIsEmojiPickerOpen(true)}
+              disabled={!isOwner}
+              className={`relative w-[84px] h-[84px] rounded-3xl bg-white border-4 border-white shadow-xl flex items-center justify-center text-4xl transition transform ${
+                isOwner ? 'cursor-pointer active:scale-95' : 'cursor-default'
+              } ${saveFlashElement === 'avatar' ? 'ring-4 ring-emerald-400 scale-105' : ''}`}
+              title={isOwner ? t.chooseAvatar : undefined}
             >
               <span>{shop.avatar_emoji || '🏪'}</span>
-              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-md">
-                <Edit2 className="w-3 h-3" />
-              </div>
+              {isOwner && (
+                <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-md">
+                  <Edit2 className="w-3 h-3" />
+                </div>
+              )}
             </button>
 
             {/* Owner / Attendant Role Pill */}
@@ -474,9 +478,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             </div>
           </div>
 
-          {/* Shop Name (22px bold, tap-to-edit inline) */}
+          {/* Shop Name (22px bold, tap-to-edit inline for owner only) */}
           <div className="mt-1">
-            {isEditingName ? (
+            {isEditingName && isOwner ? (
               <div className="flex items-center gap-1.5 mt-1">
                 <input
                   type="text"
@@ -488,7 +492,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveShopName}
-                  className="p-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+                  className="p-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer"
                 >
                   <Check className="w-4 h-4" />
                 </button>
@@ -496,24 +500,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             ) : (
               <div
                 onClick={() => {
+                  if (!isOwner) return;
                   setNameInput(shop.shop_name);
                   setIsEditingName(true);
                 }}
-                className={`group flex items-center gap-1.5 cursor-pointer rounded-lg hover:bg-slate-100 px-1 py-0.5 transition ${
-                  saveFlashElement === 'name' ? 'bg-emerald-50 text-emerald-900' : ''
-                }`}
+                className={`group flex items-center gap-1.5 rounded-lg px-1 py-0.5 transition ${
+                  isOwner ? 'cursor-pointer hover:bg-slate-100' : ''
+                } ${saveFlashElement === 'name' ? 'bg-emerald-50 text-emerald-900' : ''}`}
               >
                 <h1 className="text-xl font-black text-slate-900 tracking-tight leading-tight">
                   {shop.shop_name}
                 </h1>
-                <Edit2 className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-600 opacity-60 group-hover:opacity-100 transition" />
+                {isOwner && (
+                  <Edit2 className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-600 opacity-60 group-hover:opacity-100 transition" />
+                )}
               </div>
             )}
           </div>
 
-          {/* Tagline (small, muted, tap-to-edit inline with 60 char cap) */}
+          {/* Tagline (small, muted, tap-to-edit inline for owner only) */}
           <div className="mt-0.5">
-            {isEditingTagline ? (
+            {isEditingTagline && isOwner ? (
               <div className="flex items-center gap-1.5 mt-1">
                 <input
                   type="text"
@@ -527,7 +534,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveTagline}
-                  className="p-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+                  className="p-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer"
                 >
                   <Check className="w-3.5 h-3.5" />
                 </button>
@@ -535,17 +542,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             ) : (
               <div
                 onClick={() => {
+                  if (!isOwner) return;
                   setTaglineInput(shop.tagline || '');
                   setIsEditingTagline(true);
                 }}
-                className={`group flex items-center gap-1 cursor-pointer rounded-lg hover:bg-slate-100 px-1 py-0.5 transition ${
-                  saveFlashElement === 'tagline' ? 'bg-emerald-50 text-emerald-900' : ''
-                }`}
+                className={`group flex items-center gap-1 rounded-lg px-1 py-0.5 transition ${
+                  isOwner ? 'cursor-pointer hover:bg-slate-100' : ''
+                } ${saveFlashElement === 'tagline' ? 'bg-emerald-50 text-emerald-900' : ''}`}
               >
                 <p className="text-xs text-slate-500 italic">
                   {shop.tagline || t.taglinePrompt}
                 </p>
-                <Edit2 className="w-3 h-3 text-slate-400 opacity-0 group-hover:opacity-100 transition" />
+                {isOwner && (
+                  <Edit2 className="w-3 h-3 text-slate-400 opacity-0 group-hover:opacity-100 transition" />
+                )}
               </div>
             )}
           </div>
@@ -762,14 +772,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     {shop.contact_email || user.email || '—'}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveStepModal('contact')}
-                  className="w-full mt-2 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
-                >
-                  <Edit2 className="w-3.5 h-3.5" />
-                  <span>{t.edit} {t.sectionContact}</span>
-                </button>
+                {isOwner ? (
+                  <button
+                    type="button"
+                    onClick={() => setActiveStepModal('contact')}
+                    className="w-full mt-2 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span>{t.edit} {t.sectionContact}</span>
+                  </button>
+                ) : (
+                  <p className="text-[10px] text-slate-400 italic text-center pt-1">
+                    {isEn ? 'Only shop owner can edit contact details.' : 'Mwenye duka pekee anaweza kuhariri mawasiliano.'}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -847,14 +863,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveStepModal('location')}
-                  className="w-full mt-2 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
-                >
-                  <Edit2 className="w-3.5 h-3.5" />
-                  <span>{t.edit} {t.sectionLocation}</span>
-                </button>
+                {isOwner ? (
+                  <button
+                    type="button"
+                    onClick={() => setActiveStepModal('location')}
+                    className="w-full mt-2 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span>{t.edit} {t.sectionLocation}</span>
+                  </button>
+                ) : (
+                  <p className="text-[10px] text-slate-400 italic text-center pt-1">
+                    {isEn ? 'Only shop owner can edit shop location.' : 'Mwenye duka pekee anaweza kuhariri eneo la duka.'}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1034,24 +1056,32 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </span>
                 </div>
 
-                {/* Instant Pay Now Button */}
-                <button
-                  type="button"
-                  onClick={() => setShowPaymentModal(true)}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm flex items-center justify-center gap-2 active:scale-[0.99] transition cursor-pointer"
-                >
-                  <CreditCard className="w-4 h-4" />
-                  <span>{language === 'en' ? 'Pay Subscription Now (STK / Till)' : 'Lipa Ada Sasa (STK / Till)'}</span>
-                </button>
+                {/* Instant Pay Now Button & Edit (Owner Only) */}
+                {isOwner ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowPaymentModal(true)}
+                      className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm flex items-center justify-center gap-2 active:scale-[0.99] transition cursor-pointer"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      <span>{language === 'en' ? 'Pay Subscription Now (STK / Till)' : 'Lipa Ada Sasa (STK / Till)'}</span>
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveStepModal('plan')}
-                  className="w-full py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
-                >
-                  <Edit2 className="w-3.5 h-3.5" />
-                  <span>{t.edit} {t.sectionPlan}</span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveStepModal('plan')}
+                      className="w-full py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>{t.edit} {t.sectionPlan}</span>
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-[10px] text-slate-400 italic text-center pt-1">
+                    {isEn ? 'Subscription billing is managed by the shop owner.' : 'Malipo ya ada yanasimamiwa na mwenye duka.'}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1678,6 +1708,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
             {expandedSection === 'loan' && (
               <div className="px-3.5 pb-3.5 pt-1 border-t border-slate-100 space-y-2.5 text-xs">
+                {!isOwner ? (
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-center space-y-1">
+                    <span className="text-lg block">🔒</span>
+                    <h4 className="font-bold text-slate-800 text-xs">
+                      {language === 'en' ? 'Merchant Loans (Owner Only)' : 'Mikopo ya Bidhaa (Mwenye Duka Pekee)'}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      {language === 'en'
+                        ? 'Merchant restocking loan applications, credit limits, and repayments are managed exclusively by the shop owner account.'
+                        : 'Maombi ya mikopo ya kununua bidhaa na ukomo wa mkopo yanasimamiwa na mwenye duka pekee.'}
+                    </p>
+                  </div>
+                ) : (
+                  <>
                 {/* 1. LOAN APPROVED / DISBURSED (ACTIVE & ACCEPT INSTALMENTS) */}
                 {(shop.active_loan_status === 'approved' || shop.active_loan_status === 'disbursed') &&
                 ((shop.active_loan_balance && shop.active_loan_balance > 0) || (shop.active_loan_amount && shop.active_loan_amount > 0)) ? (
@@ -1977,6 +2021,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     </button>
                   </>
                 )}
+                </>
+              )}
               </div>
             )}
           </div>
@@ -2030,16 +2076,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </button>
         </div>
 
-        {/* Admin Portal Dashboard Switcher (Hidden to standard users, strictly authorized for peterngecu001@gmail.com) */}
+        {/* Admin Portal Dashboard Switcher (Strictly restricted to peterngecu001@gmail.com) */}
         {isPeterNgecu && (
           <div className="pt-4 flex justify-center pb-2">
             <button
               type="button"
               onClick={() => setIsAdminMode(!isAdminMode)}
-              className="px-3.5 py-2 bg-slate-100 border border-slate-200 text-[9px] font-black tracking-wider text-amber-700 hover:text-amber-900 rounded-xl transition active:scale-95 cursor-pointer uppercase shadow-2xs flex items-center gap-1"
+              className="px-3.5 py-2 bg-slate-900 border border-amber-500 text-[10px] font-black tracking-wider text-amber-400 hover:bg-slate-800 rounded-xl transition active:scale-95 cursor-pointer uppercase shadow-md flex items-center gap-1.5"
             >
               <span>🛠</span>
-              <span>{isAdminMode ? 'Hide Admin Dashboard' : 'Developer Admin Dashboard (Authorized Only)'}</span>
+              <span>{isAdminMode ? 'Hide Admin Loan & Credit Portal' : 'Open Admin Loan & Credit Portal (peterngecu001@gmail.com)'}</span>
             </button>
           </div>
         )}
@@ -2056,21 +2102,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               {language === 'en' ? 'Privacy Policy & Terms of Use' : 'Sera ya Faragha na Masharti'}
             </a>
           </div>
-          <div
-            onClick={() => {
-              if (!isPeterNgecu) return; // Strictly restricted to peterngecu001@gmail.com
-              const nextTaps = copyrightTaps + 1;
-              setCopyrightTaps(nextTaps);
-              if (nextTaps === 3) {
-                setIsAdminMode(true);
-                if (typeof window !== 'undefined') {
-                  window.alert('Developer Mode unlocked! Admin controls are now available in your profile hub.');
-                }
-              }
-            }}
-            className="cursor-pointer active:opacity-60 hover:text-slate-500 transition py-1"
-            title={isPeterNgecu ? "Tap 3 times to unlock developer controls" : undefined}
-          >
+          <div className="text-slate-400 py-1">
             Copyright © 2026 SmartSort Solutions Company
           </div>
         </div>
