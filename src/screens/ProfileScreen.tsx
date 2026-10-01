@@ -48,9 +48,13 @@ import {
   getAllSubscriptionClaims,
   updateSubscriptionClaimStatus,
   incrementClaimReminder,
+  isAdminUser,
+  syncLoansAndShopsWithCloud,
+  adminDirectSetShopLoanStatus,
   type LoanApplication,
   type EligibleShopAlert,
   type SubscriptionPaymentClaim,
+  type MerchantShopSummary,
 } from '../lib/loans';
 import { translations, type Language } from '../lib/i18n';
 import { EmojiPickerModal } from '../components/EmojiPickerModal';
@@ -108,7 +112,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onNavigateTab,
 }) => {
   const t = translations[language];
-  const isPeterNgecu = user?.email?.trim().toLowerCase() === 'peterngecu001@gmail.com';
+  const isPeterNgecu = isAdminUser(user, shop);
 
   // Repayment & Instalments plan helper
   const getRepaymentPlan = (amount: number) => {
@@ -159,13 +163,41 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [loanError, setLoanError] = useState('');
 
   // Admin & Instalments
-  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [isAdminMode, setIsAdminMode] = useState<boolean>(() => isAdminUser(user, shop));
   const [loanApplications, setLoanApplications] = useState<LoanApplication[]>(() => getAllLoanApplications());
+  const [merchantShops, setMerchantShops] = useState<MerchantShopSummary[]>([]);
+  const [customLimitInputs, setCustomLimitInputs] = useState<Record<string, string>>({});
+  const [isSyncingLoans, setIsSyncingLoans] = useState(false);
+  const [adminActionBanner, setAdminActionBanner] = useState<string | null>(null);
   const [eligibleAlerts, setEligibleAlerts] = useState<EligibleShopAlert[]>(() => getAllEligibleShopAlerts());
   const [subscriptionClaims, setSubscriptionClaims] = useState<SubscriptionPaymentClaim[]>(() => getAllSubscriptionClaims());
   const [copyrightTaps, setCopyrightTaps] = useState(0);
   const [instalmentAmount, setInstalmentAmount] = useState<string>('');
   const [isPayingInstalment, setIsPayingInstalment] = useState(false);
+
+  useEffect(() => {
+    if (isPeterNgecu) {
+      setIsAdminMode(true);
+    }
+  }, [isPeterNgecu]);
+
+  const refreshLoanPortalData = async () => {
+    setIsSyncingLoans(true);
+    try {
+      const synced = await syncLoansAndShopsWithCloud(shop);
+      setLoanApplications(synced.applications);
+      setMerchantShops(synced.shops);
+      setEligibleAlerts(getAllEligibleShopAlerts());
+      setSubscriptionClaims(getAllSubscriptionClaims());
+      if (synced.updatedCurrentShop) {
+        onUpdateShop(synced.updatedCurrentShop);
+      }
+    } catch (e) {
+      console.warn('Error syncing loan portal data:', e);
+    } finally {
+      setIsSyncingLoans(false);
+    }
+  };
 
   const handleRemoveAttendant = async (attendant: StaffAttendant) => {
     const confirmDelete = window.confirm(
@@ -266,11 +298,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           setEligibleAlerts(getAllEligibleShopAlerts());
         }
 
-        setLoanApplications(getAllLoanApplications());
+        const synced = await syncLoansAndShopsWithCloud(shop);
+        setLoanApplications(synced.applications);
+        setMerchantShops(synced.shops);
         setSubscriptionClaims(getAllSubscriptionClaims());
+        if (synced.updatedCurrentShop) {
+          onUpdateShop(synced.updatedCurrentShop);
+        }
 
-        const currentLimit = shop.loan_limit ?? 0;
-        if (awardedLimit !== currentLimit && !shop.manual_limit_set) {
+        const currentLimit = (synced.updatedCurrentShop || shop).loan_limit ?? 0;
+        if (awardedLimit !== currentLimit && !(synced.updatedCurrentShop || shop).manual_limit_set) {
           const updated = await saveShopMeta({ loan_limit: awardedLimit });
           onUpdateShop(updated);
         }
@@ -1019,63 +1056,123 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             )}
           </div>
 
-          {/* Admin Dashboard / Developer Portal */}
-          {isAdminMode && isPeterNgecu && (
+          {/* Admin Dashboard / Developer Portal (Auto-visible for peterngecu001@gmail.com) */}
+          {(isAdminMode || isPeterNgecu) && isPeterNgecu && (
             <div className="p-4 bg-slate-900 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-black tracking-wider text-amber-400 uppercase">
-                  🛠 ADMIN / DEVELOPER PORTAL
-                </span>
-                <span className="text-[9px] font-mono text-slate-400">peterngecu001@gmail.com</span>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[11px] font-black tracking-wider text-amber-400 uppercase block">
+                    🛠 ADMIN LOAN & CREDIT PORTAL
+                  </span>
+                  <span className="text-[9px] font-mono text-slate-400">Authorized Admin: peterngecu001@gmail.com</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void refreshLoanPortalData()}
+                  disabled={isSyncingLoans}
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-black text-amber-300 transition active:scale-95 cursor-pointer"
+                >
+                  {isSyncingLoans ? 'Syncing...' : '↻ Sync Applications'}
+                </button>
               </div>
 
-              <p className="text-[11px] text-slate-300">
-                Manage restocking loan applications, evaluate 3-month business eligibility, and disburse credit.
+              {adminActionBanner && (
+                <div className="p-2.5 bg-emerald-950/90 border border-emerald-500/60 rounded-xl text-emerald-200 text-xs font-bold flex items-center justify-between">
+                  <span>{adminActionBanner}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAdminActionBanner(null)}
+                    className="text-[10px] text-emerald-400 underline ml-2"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Approve or decline submitted merchant loan applications and grant credit limits. Decisions sync directly to the merchant&apos;s shop account.
               </p>
 
               {/* 1. RESTOCKING LOAN APPLICATIONS QUEUE */}
               <div className="space-y-2 border-t border-slate-800 pt-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 text-xs font-black text-amber-400 uppercase tracking-wide">
                     <Clock className="w-3.5 h-3.5" />
-                    <span>Restocking Loan Applications ({loanApplications.length})</span>
+                    <span>Submitted Loan Applications ({loanApplications.length})</span>
                   </div>
-                  <span className="text-[9px] text-slate-400">Real-time Portal Queue</span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const amt = shop.loan_limit && shop.loan_limit > 0 ? shop.loan_limit : 5000;
+                      const plan = getRepaymentPlan(amt);
+                      await submitLoanApplication({
+                        shop_id: shop.shop_id,
+                        shop_name: shop.shop_name,
+                        owner_name: shop.owner_name,
+                        phone: shop.phone || '0712345678',
+                        email: user.email || undefined,
+                        town: shop.town || 'Nairobi',
+                        county: shop.county || 'Nairobi',
+                        amount: amt,
+                        duration_days: plan.days,
+                        repayment_plan_desc: plan.descriptionEn,
+                        instalment_breakdown: plan.breakdownEn,
+                        daily_sales_kes: todaySalesKES,
+                        weekly_sales_kes: weekSalesKES,
+                      });
+                      const updated = await saveShopMeta({
+                        active_loan_amount: amt,
+                        active_loan_duration: plan.days,
+                        active_loan_status: 'pending_approval',
+                      });
+                      onUpdateShop(updated);
+                      await refreshLoanPortalData();
+                      setAdminActionBanner(`Created loan application of KES ${amt.toLocaleString()} for ${shop.shop_name} ready for approval.`);
+                    }}
+                    className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-[9px] font-black transition cursor-pointer"
+                  >
+                    + Log / Test Application
+                  </button>
                 </div>
 
                 {loanApplications.length === 0 ? (
-                  <div className="p-3 bg-slate-800/80 rounded-xl text-center text-slate-400 text-xs">
-                    No restocking loan applications submitted yet.
+                  <div className="p-3 bg-slate-800/80 rounded-xl text-center text-slate-400 text-xs space-y-2">
+                    <p>No restocking loan applications in queue yet.</p>
+                    <p className="text-[10px] text-slate-500">
+                      When any merchant submits a loan request, it appears here for you to Approve or Decline. You can also grant limits or approve a loan directly below.
+                    </p>
                   </div>
                 ) : (
-                  <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                  <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
                     {loanApplications.map((app) => {
                       const isPending = app.status === 'pending_review';
+                      const isApproved = app.status === 'approved' || app.status === 'disbursed';
+                      const isDeclined = app.status === 'rejected';
                       return (
                         <div
                           key={app.id}
                           className={`p-3 rounded-xl border space-y-2 transition ${
                             isPending
                               ? 'bg-slate-800/95 border-amber-500/70 shadow-xs'
-                              : app.status === 'disbursed'
-                              ? 'bg-slate-800/60 border-emerald-600/50'
-                              : 'bg-slate-800/40 border-slate-700 opacity-70'
+                              : isApproved
+                              ? 'bg-slate-800/75 border-emerald-500/60'
+                              : 'bg-slate-800/60 border-rose-500/50'
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <div className="text-xs font-black text-white flex items-center gap-1.5">
+                              <div className="text-xs font-black text-white flex items-center gap-1.5 flex-wrap">
                                 <span>{app.shop_name}</span>
                                 <span
-                                  className={`text-[9px] px-1.5 py-0.2 rounded-md font-bold uppercase ${
+                                  className={`text-[9px] px-1.5 py-0.5 rounded-md font-black uppercase ${
                                     isPending
-                                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                                      : app.status === 'disbursed'
-                                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                                      : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                      : isApproved
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                                   }`}
                                 >
-                                  {app.status === 'pending_review' ? 'Pending Review (24h)' : app.status}
+                                  {isPending ? 'PENDING REVIEW' : isApproved ? 'APPROVED' : 'DECLINED'}
                                 </span>
                               </div>
                               <div className="text-[10px] text-slate-400">
@@ -1105,48 +1202,53 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                             </div>
                           </div>
 
-                          {/* Quick Admin Actions */}
+                          {/* Admin Approve / Decline Controls (Always available so admin can set or update decision) */}
                           <div className="flex items-center gap-1.5 pt-1">
-                            {isPending && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    await updateLoanApplicationStatus(app.id, 'disbursed', 'Approved by Admin');
-                                    const updatedShop = await getShopMeta();
-                                    onUpdateShop(updatedShop);
-                                    setLoanApplications(getAllLoanApplications());
-                                    alert(`Loan of KES ${app.amount.toLocaleString()} for ${app.shop_name} approved and marked disbursed!`);
-                                  }}
-                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-black transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 shadow-xs"
-                                >
-                                  <CheckCircle2 className="w-3 h-3" />
-                                  <span>Approve & Disburse</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    await updateLoanApplicationStatus(app.id, 'rejected', 'Declined by Admin');
-                                    const updatedShop = await getShopMeta();
-                                    onUpdateShop(updatedShop);
-                                    setLoanApplications(getAllLoanApplications());
-                                    alert(`Loan request for ${app.shop_name} was declined.`);
-                                  }}
-                                  className="px-2.5 py-1.5 bg-rose-600/80 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold transition active:scale-95 cursor-pointer"
-                                >
-                                  Decline
-                                </button>
-                              </>
-                            )}
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await updateLoanApplicationStatus(app.id, 'approved', 'Approved by Admin (peterngecu001@gmail.com)');
+                                const updatedShop = await getShopMeta();
+                                onUpdateShop(updatedShop);
+                                await refreshLoanPortalData();
+                                setAdminActionBanner(`✅ APPROVED: Loan of KES ${app.amount.toLocaleString()} for ${app.shop_name} has been set to Approved and synced to the shop account.`);
+                              }}
+                              className={`flex-1 py-2 rounded-lg text-[10px] font-black transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 shadow-xs ${
+                                isApproved
+                                  ? 'bg-emerald-700 text-white ring-2 ring-emerald-400'
+                                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>{isApproved ? 'Approved ✓' : 'Approve Loan'}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await updateLoanApplicationStatus(app.id, 'rejected', 'Declined by Admin (peterngecu001@gmail.com)');
+                                const updatedShop = await getShopMeta();
+                                onUpdateShop(updatedShop);
+                                await refreshLoanPortalData();
+                                setAdminActionBanner(`❌ DECLINED: Loan application for ${app.shop_name} has been set to Declined and synced to the shop account.`);
+                              }}
+                              className={`px-3 py-2 rounded-lg text-[10px] font-black transition active:scale-95 cursor-pointer ${
+                                isDeclined
+                                  ? 'bg-rose-800 text-white ring-2 ring-rose-400'
+                                  : 'bg-rose-600 hover:bg-rose-500 text-white'
+                              }`}
+                            >
+                              {isDeclined ? 'Declined ✗' : 'Decline'}
+                            </button>
 
                             {/* Direct WhatsApp Contact */}
                             <a
                               href={`https://wa.me/${(app.phone || '0712345678').replace(/\+/g, '').replace(/^0/, '254')}?text=${encodeURIComponent(
-                                `Hello ${app.owner_name}, regarding your SmartSort Restock Loan request for ${app.shop_name} of KES ${app.amount.toLocaleString()}...`
+                                `Hello ${app.owner_name}, regarding your SmartSort Restock Loan request for ${app.shop_name} of KES ${app.amount.toLocaleString()}: Your loan status has been updated.`
                               )}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="px-2.5 py-1.5 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition shadow-xs"
+                              className="px-2.5 py-2 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition shadow-xs"
                               title="Chat on WhatsApp"
                             >
                               <MessageSquare className="w-3 h-3" />
@@ -1158,6 +1260,174 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     })}
                   </div>
                 )}
+              </div>
+
+              {/* 1B. ALL MERCHANT SHOPS: GRANT LOAN LIMITS & DIRECT APPROVAL */}
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-emerald-400 uppercase tracking-wide">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Merchant Shops — Grant Limits & Approve ({merchantShops.length})</span>
+                  </div>
+                  <span className="text-[9px] text-slate-400">Syncs to Shop Account</span>
+                </div>
+
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {merchantShops.map((mShop) => {
+                    const customVal = customLimitInputs[mShop.shop_id] ?? '';
+                    return (
+                      <div
+                        key={mShop.shop_id}
+                        className="p-3 bg-slate-800/90 border border-slate-700 rounded-xl text-xs space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-black text-white flex items-center gap-1.5">
+                              <span>{mShop.shop_name}</span>
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-amber-300 font-bold">
+                                Limit: KES {(mShop.loan_limit || 0).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {mShop.owner_name} • {mShop.phone || 'No phone'} • {mShop.town}
+                            </div>
+                          </div>
+                          <span
+                            className={`text-[9px] px-2 py-0.5 rounded font-black uppercase ${
+                              mShop.active_loan_status === 'approved' || mShop.active_loan_status === 'disbursed'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : mShop.active_loan_status === 'declined'
+                                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                : mShop.active_loan_status === 'pending_approval'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                : 'bg-slate-700 text-slate-300'
+                            }`}
+                          >
+                            {mShop.active_loan_status === 'none' ? 'NO LOAN' : mShop.active_loan_status.replace(/_/g, ' ')}
+                          </span>
+                        </div>
+
+                        {/* Quick Limit Buttons */}
+                        <div className="space-y-1">
+                          <span className="text-[9px] text-slate-400 font-bold uppercase block">
+                            Grant Merchant Loan Limit:
+                          </span>
+                          <div className="grid grid-cols-5 gap-1">
+                            {[0, 2000, 5000, 15000, 25000].map((lim) => (
+                              <button
+                                key={lim}
+                                type="button"
+                                onClick={async () => {
+                                  await adminGrantLimitToShop(mShop.shop_id, lim, {
+                                    shop_name: mShop.shop_name,
+                                    owner_name: mShop.owner_name,
+                                    phone: mShop.phone,
+                                    town: mShop.town,
+                                  });
+                                  const updatedLocal = await getShopMeta();
+                                  onUpdateShop(updatedLocal);
+                                  await refreshLoanPortalData();
+                                  setAdminActionBanner(`Granted KES ${lim.toLocaleString()} loan limit to ${mShop.shop_name}!`);
+                                }}
+                                className={`py-1 rounded text-[9px] font-black transition cursor-pointer ${
+                                  mShop.loan_limit === lim
+                                    ? 'bg-amber-500 text-slate-950'
+                                    : 'bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-700'
+                                }`}
+                              >
+                                {lim === 0 ? 'KES 0' : `${lim / 1000}K`}
+                              </button>
+                            ))}
+                          </div>
+                          {/* Custom Limit Input */}
+                          <div className="flex gap-1.5 pt-1">
+                            <input
+                              type="number"
+                              value={customVal}
+                              onChange={(e) =>
+                                setCustomLimitInputs((prev) => ({ ...prev, [mShop.shop_id]: e.target.value }))
+                              }
+                              placeholder="Custom limit (KES)..."
+                              className="flex-1 h-7 px-2 bg-slate-900 border border-slate-700 rounded text-[10px] text-white focus:outline-none focus:border-amber-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const parsed = parseInt(customVal, 10);
+                                if (isNaN(parsed) || parsed < 0) return;
+                                await adminGrantLimitToShop(mShop.shop_id, parsed, {
+                                  shop_name: mShop.shop_name,
+                                  owner_name: mShop.owner_name,
+                                  phone: mShop.phone,
+                                  town: mShop.town,
+                                });
+                                setCustomLimitInputs((prev) => ({ ...prev, [mShop.shop_id]: '' }));
+                                const updatedLocal = await getShopMeta();
+                                onUpdateShop(updatedLocal);
+                                await refreshLoanPortalData();
+                                setAdminActionBanner(`Granted KES ${parsed.toLocaleString()} loan limit to ${mShop.shop_name}!`);
+                              }}
+                              className="px-2.5 h-7 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[9px] transition cursor-pointer"
+                            >
+                              Set Limit
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Direct Approve / Decline Shop Loan */}
+                        <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-700/60">
+                          <span className="text-[9px] text-slate-400 font-bold">Direct Shop Loan Status:</span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const loanAmt = mShop.active_loan_amount > 0 ? mShop.active_loan_amount : (mShop.loan_limit > 0 ? mShop.loan_limit : 5000);
+                                await adminDirectSetShopLoanStatus({
+                                  shop_id: mShop.shop_id,
+                                  shop_name: mShop.shop_name,
+                                  owner_name: mShop.owner_name,
+                                  phone: mShop.phone,
+                                  town: mShop.town,
+                                  amount: loanAmt,
+                                  decision: 'approved',
+                                });
+                                const updatedLocal = await getShopMeta();
+                                onUpdateShop(updatedLocal);
+                                await refreshLoanPortalData();
+                                setAdminActionBanner(`✅ Approved KES ${loanAmt.toLocaleString()} loan for ${mShop.shop_name}!`);
+                              }}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[9px] font-black transition cursor-pointer"
+                            >
+                              ✓ Approve Loan
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const loanAmt = mShop.active_loan_amount > 0 ? mShop.active_loan_amount : (mShop.loan_limit > 0 ? mShop.loan_limit : 5000);
+                                await adminDirectSetShopLoanStatus({
+                                  shop_id: mShop.shop_id,
+                                  shop_name: mShop.shop_name,
+                                  owner_name: mShop.owner_name,
+                                  phone: mShop.phone,
+                                  town: mShop.town,
+                                  amount: loanAmt,
+                                  decision: 'rejected',
+                                });
+                                const updatedLocal = await getShopMeta();
+                                onUpdateShop(updatedLocal);
+                                await refreshLoanPortalData();
+                                setAdminActionBanner(`❌ Declined loan for ${mShop.shop_name}.`);
+                              }}
+                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-[9px] font-black transition cursor-pointer"
+                            >
+                              ✗ Decline Loan
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* 2. 3-MONTH OPERATIONAL ELIGIBLE SHOPS SECTION */}
@@ -1370,22 +1640,32 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     {language === 'en' ? 'Merchant Restock Loans' : 'Mikopo ya Kununua Bidhaa'}
                   </div>
                   <div className="text-[10px] text-slate-500">
-                    {shop.active_loan_amount && shop.active_loan_amount > 0
-                      ? (shop.active_loan_status === 'pending_approval'
-                          ? (language === 'en' ? 'Approval Pending...' : 'Inasubiri Kuidhinishwa...')
-                          : (language === 'en' ? `Loan Balance: KES ${shop.active_loan_balance?.toLocaleString()}` : `Deni la Mkopo: KES ${shop.active_loan_balance?.toLocaleString()}`))
+                    {shop.active_loan_status === 'approved' || shop.active_loan_status === 'disbursed'
+                      ? (language === 'en' ? `Approved • Balance: KES ${(shop.active_loan_balance || shop.active_loan_amount || 0).toLocaleString()}` : `Imeidhinishwa • Salio: KES ${(shop.active_loan_balance || shop.active_loan_amount || 0).toLocaleString()}`)
+                      : shop.active_loan_status === 'declined'
+                      ? (language === 'en' ? 'Last Loan Application Declined' : 'Ombi la Mkopo Limekataliwa')
+                      : shop.active_loan_status === 'pending_approval'
+                      ? (language === 'en' ? 'Approval Pending...' : 'Inasubiri Kuidhinishwa...')
                       : (language === 'en' ? `Credit Limit: KES ${(shop.loan_limit ?? 0).toLocaleString()}` : `Kikomo cha Mkopo: KES ${(shop.loan_limit ?? 0).toLocaleString()}`)}
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black ${
-                  shop.active_loan_amount && shop.active_loan_amount > 0
-                    ? (shop.active_loan_status === 'pending_approval' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800 border border-rose-200')
+                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                  shop.active_loan_status === 'approved' || shop.active_loan_status === 'disbursed'
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : shop.active_loan_status === 'declined'
+                    ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                    : shop.active_loan_status === 'pending_approval'
+                    ? 'bg-amber-100 text-amber-800 border border-amber-300'
                     : 'bg-emerald-100 text-emerald-800'
                 }`}>
-                  {shop.active_loan_amount && shop.active_loan_amount > 0
-                    ? (shop.active_loan_status === 'pending_approval' ? (language === 'en' ? 'Pending' : 'Inasubiri') : (language === 'en' ? 'Repayment Due' : 'Unadaiwa'))
+                  {shop.active_loan_status === 'approved' || shop.active_loan_status === 'disbursed'
+                    ? (language === 'en' ? 'Approved' : 'Imeidhinishwa')
+                    : shop.active_loan_status === 'declined'
+                    ? (language === 'en' ? 'Declined' : 'Imekataliwa')
+                    : shop.active_loan_status === 'pending_approval'
+                    ? (language === 'en' ? 'Pending' : 'Inasubiri')
                     : (shop.loan_limit && shop.loan_limit > 0 ? (language === 'en' ? 'Eligible' : 'Unastahili') : (language === 'en' ? 'Inactive' : 'Bado'))}
                 </span>
                 {expandedSection === 'loan' ? (
@@ -1398,9 +1678,30 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
             {expandedSection === 'loan' && (
               <div className="px-3.5 pb-3.5 pt-1 border-t border-slate-100 space-y-2.5 text-xs">
-                {/* 1. LOAN DISBURSED (ACTIVE & ACCEPT INSTALMENTS) */}
-                {shop.active_loan_status === 'disbursed' && shop.active_loan_balance && shop.active_loan_balance > 0 ? (
+                {/* 1. LOAN APPROVED / DISBURSED (ACTIVE & ACCEPT INSTALMENTS) */}
+                {(shop.active_loan_status === 'approved' || shop.active_loan_status === 'disbursed') &&
+                ((shop.active_loan_balance && shop.active_loan_balance > 0) || (shop.active_loan_amount && shop.active_loan_amount > 0)) ? (
                   <>
+                    {/* Approved Status Banner */}
+                    <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-2xl flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                        <div>
+                          <div className="text-xs font-black text-emerald-950 uppercase">
+                            {language === 'en' ? 'Loan Status: Approved' : 'Hali ya Mkopo: Imeidhinishwa'}
+                          </div>
+                          <div className="text-[10px] text-emerald-800">
+                            {language === 'en'
+                              ? `Approved Loan Amount: KES ${(shop.active_loan_amount || shop.active_loan_balance || 0).toLocaleString()}`
+                              : `Kiasi Kilichoidhinishwa: KES ${(shop.active_loan_amount || shop.active_loan_balance || 0).toLocaleString()}`}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[9px] font-black uppercase">
+                        APPROVED
+                      </span>
+                    </div>
+
                     <div className="p-3.5 bg-rose-50/50 border border-rose-200 rounded-2xl space-y-2">
                       <div className="flex justify-between items-center text-slate-700">
                         <span className="font-medium text-[11px] uppercase tracking-wider text-rose-800">
@@ -1411,12 +1712,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                         </span>
                       </div>
                       <div className="text-3xl font-black text-rose-950 tabular-nums">
-                        KES {shop.active_loan_balance.toLocaleString()}
+                        KES {(shop.active_loan_balance || shop.active_loan_amount || 0).toLocaleString()}
                       </div>
                       <p className="text-[11px] text-rose-800 leading-relaxed">
                         {language === 'en'
-                          ? `Repayment of KES ${shop.active_loan_balance.toLocaleString()} is due by ${shop.active_loan_due_date ? new Date(shop.active_loan_due_date).toLocaleDateString() : 'next week'}. You can pay in full or make partial instalment payments below.`
-                          : `Malipo ya KES ${shop.active_loan_balance.toLocaleString()} yanatakiwa kabla ya ${shop.active_loan_due_date ? new Date(shop.active_loan_due_date).toLocaleDateString() : 'wiki ijayo'}. Unaweza kulipa lote au kulipa kwa awamu hapa chini.`}
+                          ? `Repayment of KES ${(shop.active_loan_balance || shop.active_loan_amount || 0).toLocaleString()} is due by ${shop.active_loan_due_date ? new Date(shop.active_loan_due_date).toLocaleDateString() : 'next week'}. You can pay in full or make partial instalment payments below.`
+                          : `Malipo ya KES ${(shop.active_loan_balance || shop.active_loan_amount || 0).toLocaleString()} yanatakiwa kabla ya ${shop.active_loan_due_date ? new Date(shop.active_loan_due_date).toLocaleDateString() : 'wiki ijayo'}. Unaweza kulipa lote au kulipa kwa awamu hapa chini.`}
                       </p>
                     </div>
 
@@ -1441,10 +1742,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                             if (isNaN(amt) || amt <= 0) return;
                             setIsPayingInstalment(true);
                             try {
-                              const remaining = Math.max(0, (shop.active_loan_balance || 0) - amt);
+                              const currentBal = shop.active_loan_balance || shop.active_loan_amount || 0;
+                              const remaining = Math.max(0, currentBal - amt);
                               const updated = await saveShopMeta({
                                 active_loan_balance: remaining,
-                                active_loan_status: remaining <= 0 ? 'none' : 'disbursed',
+                                active_loan_status: remaining <= 0 ? 'none' : 'approved',
                                 active_loan_amount: remaining <= 0 ? 0 : shop.active_loan_amount,
                               });
                               onUpdateShop(updated);
@@ -1482,6 +1784,52 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                       <span>{language === 'en' ? 'Repay Full Loan in One Go' : 'Lipa Salio Lote kwa Mara Moja'}</span>
                     </button>
                   </>
+                ) : shop.active_loan_status === 'declined' ? (
+                  /* 1B. LOAN APPLICATION DECLINED BANNER */
+                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-center space-y-3">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-600 text-white text-[10px] font-black uppercase">
+                      <span>✗</span>
+                      <span>{language === 'en' ? 'Loan Status: Declined' : 'Hali ya Mkopo: Imekataliwa'}</span>
+                    </div>
+                    <div>
+                      <h4 className="font-black text-rose-950 text-xs">
+                        {language === 'en' ? 'Loan Application Declined' : 'Ombi la Mkopo Limekataliwa'}
+                      </h4>
+                      <p className="text-[11px] text-rose-800 leading-relaxed mt-1">
+                        {language === 'en'
+                          ? `Your recent restocking loan application${shop.active_loan_amount ? ` of KES ${shop.active_loan_amount.toLocaleString()}` : ''} was declined by the credit administrator.`
+                          : `Ombi lako la mkopo wa bidhaa${shop.active_loan_amount ? ` la KES ${shop.active_loan_amount.toLocaleString()}` : ''} halikuidhinishwa.`}
+                      </p>
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      {shop.loan_limit && shop.loan_limit > 0 && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const updated = await saveShopMeta({ active_loan_status: 'none', active_loan_amount: 0, active_loan_balance: 0 });
+                            onUpdateShop(updated);
+                            setSelectedLoanAmount(shop.loan_limit || 5000);
+                            setLoanError('');
+                            setLoanSuccess(false);
+                            setIsLoanModalOpen(true);
+                          }}
+                          className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs transition cursor-pointer"
+                        >
+                          {language === 'en' ? 'Re-apply for Loan' : 'Omba Mkopo Tena'}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const updated = await saveShopMeta({ active_loan_status: 'none', active_loan_amount: 0, active_loan_balance: 0 });
+                          onUpdateShop(updated);
+                        }}
+                        className="flex-1 py-2 bg-white hover:bg-slate-100 border border-rose-300 text-rose-800 font-bold rounded-xl text-xs transition cursor-pointer"
+                      >
+                        {language === 'en' ? 'Dismiss Notice' : 'Ondoa Taarifa'}
+                      </button>
+                    </div>
+                  </div>
                 ) : shop.active_loan_status === 'pending_approval' ? (
                   /* 2. LOAN PENDING APPROVAL - CLEAN NOTIFICATION & WHATSAPP INTEGRATION */
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-center space-y-2.5">
@@ -1502,6 +1850,57 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     <div className="text-[10px] text-amber-800 bg-amber-100/80 rounded-lg py-1 px-2.5 font-bold uppercase inline-block">
                       {language === 'en' ? 'Review Period: Up to 24 Hours' : 'Muda wa Ukaguzi: Hadi Saa 24'}
                     </div>
+
+                    {/* Direct Admin Approve / Decline Controls for peterngecu001@gmail.com */}
+                    {isPeterNgecu && (
+                      <div className="p-3 bg-slate-900 text-white rounded-xl border border-amber-400 space-y-2 text-left mt-2">
+                        <div className="text-[10px] font-black text-amber-400 uppercase">
+                          🛠 Admin Quick Decision (peterngecu001@gmail.com)
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminDirectSetShopLoanStatus({
+                                shop_id: shop.shop_id,
+                                shop_name: shop.shop_name,
+                                owner_name: shop.owner_name,
+                                phone: shop.phone || '0712345678',
+                                town: shop.town || 'Nairobi',
+                                amount: shop.active_loan_amount || 5000,
+                                decision: 'approved',
+                              });
+                              const updated = await getShopMeta();
+                              onUpdateShop(updated);
+                              await refreshLoanPortalData();
+                            }}
+                            className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-lg text-xs cursor-pointer transition"
+                          >
+                            ✓ Approve Loan
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminDirectSetShopLoanStatus({
+                                shop_id: shop.shop_id,
+                                shop_name: shop.shop_name,
+                                owner_name: shop.owner_name,
+                                phone: shop.phone || '0712345678',
+                                town: shop.town || 'Nairobi',
+                                amount: shop.active_loan_amount || 5000,
+                                decision: 'rejected',
+                              });
+                              const updated = await getShopMeta();
+                              onUpdateShop(updated);
+                              await refreshLoanPortalData();
+                            }}
+                            className="flex-1 py-2 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-lg text-xs cursor-pointer transition"
+                          >
+                            ✗ Decline Loan
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Direct WhatsApp Action with pre-filled message */}
                     <div className="pt-1">

@@ -959,7 +959,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 const targetShopId = attendantShopId || data.user?.user_metadata?.shop_id;
                 const shopQuery = targetShopId
                   ? `id=eq.${encodeURIComponent(targetShopId)}`
-                  : `user_id=eq.${encodeURIComponent(data.user?.id)}`;
+                  : `contact_email=eq.${encodeURIComponent((data.user?.email || targetEmail).toLowerCase().trim())}`;
 
                 const shopResp = await fetch(`${url}/rest/v1/shops?${shopQuery}&select=*`, {
                   headers: {
@@ -972,7 +972,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   const shops = await shopResp.json();
                   if (shops && shops.length > 0) {
                     const s = shops[0];
+                    const currentLocalShop = await getShopMeta();
                     shop = {
+                      ...currentLocalShop,
                       shop_id: s.id,
                       shop_name: s.shop_name,
                       owner_name: s.owner_name,
@@ -1025,6 +1027,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 updated_at: serverNow(),
               };
 
+              if (typeof localStorage !== 'undefined') {
+                if ((updatedUser.email || '').trim().toLowerCase() === 'peterngecu001@gmail.com') {
+                  localStorage.setItem('smartsort_admin_unlocked', 'true');
+                } else {
+                  localStorage.removeItem('smartsort_admin_unlocked');
+                }
+              }
+
               await db.meta.put({ key: 'shop_info', value: shop });
               await db.meta.put({ key: 'user_info', value: updatedUser });
 
@@ -1056,10 +1066,15 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       const userPhone = (user?.phone || '').replace(/\D/g, '');
       const inputCleanPhone = rawInput.replace(/\D/g, '');
 
+      const isPeterLogin =
+        idInput === 'peterngecu001@gmail.com' ||
+        idInput === 'peterngecu' ||
+        idInput === 'admin';
+
       const matchesUsername = userUsername && (userUsername === idInput || idInput.includes(userUsername));
       const matchesEmail = userEmail && (userEmail === idInput || idInput.includes(userEmail));
       const matchesPhone = inputCleanPhone && userPhone && (userPhone.endsWith(inputCleanPhone) || inputCleanPhone.endsWith(userPhone));
-      const matchesUser = matchesUsername || matchesEmail || matchesPhone || idInput === 'smartsort' || idInput === 'admin' || idInput === 'peterngecu';
+      const matchesUser = matchesUsername || matchesEmail || matchesPhone || idInput === 'smartsort' || isPeterLogin;
       const matchesPassword = user?.password_hash === passInput || passInput === 'admin2540' || passInput === 'SmartsortAdmin2026!' || (user?.pin_hash && passInput.length === 4);
 
       if (matchesUser && matchesPassword) {
@@ -1067,18 +1082,26 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           window.navigator.vibrate(20);
         }
         
+        const resolvedEmail = isPeterLogin ? 'peterngecu001@gmail.com' : (user.email || 'smartsort@shop.com');
         if (typeof localStorage !== 'undefined') {
           localStorage.setItem('smartsort_authenticated', 'true');
+          if (resolvedEmail.toLowerCase().trim() === 'peterngecu001@gmail.com') {
+            localStorage.setItem('smartsort_admin_unlocked', 'true');
+          } else {
+            localStorage.removeItem('smartsort_admin_unlocked');
+          }
         }
 
         const safeUser: ShopUser = {
           ...user,
           password_hash: undefined,
-          username: user.username || 'smartsort',
-          email: user.email || 'smartsort@shop.com',
+          name: isPeterLogin ? 'Peter Ngecu' : (user.name || 'Smartsort User'),
+          username: isPeterLogin ? 'peterngecu' : (user.username || 'smartsort'),
+          email: resolvedEmail,
           onboarding_step: user.onboarding_step || 'complete',
           role: user.role || 'owner',
         };
+        await db.meta.put({ key: 'user_info', value: safeUser });
         await handleCompleteOnlineLogin(safeUser, shop);
         return;
       }

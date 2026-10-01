@@ -434,7 +434,7 @@ export interface ShopMeta {
   active_loan_balance?: number;
   active_loan_due_date?: string;
   active_loan_duration?: number;
-  active_loan_status?: 'none' | 'pending' | 'approved' | 'disbursed' | 'paid' | 'pending_approval';
+  active_loan_status?: 'none' | 'pending' | 'approved' | 'disbursed' | 'paid' | 'pending_approval' | 'declined';
   loan_limit?: number;
   simulate_three_months_active?: boolean;
   manual_limit_set?: boolean;
@@ -564,6 +564,9 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
   const current = await getShopMeta();
   const updated = { ...current, ...shopInfo };
   await db.meta.put({ key: 'shop_info', value: updated });
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('smartsort_shop_meta_updated', { detail: updated }));
+  }
 
   const now = serverNow();
 
