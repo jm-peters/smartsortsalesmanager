@@ -2252,4 +2252,68 @@ export async function clearDatabaseForFreshStart(): Promise<void> {
   });
 }
 
+/**
+ * Universal Barcode Lookup across shops (Global Product Catalog)
+ * Enables Shop 2 onwards to instantly recognize scanned universal barcodes,
+ * inheriting product name, emoji, and unit while allowing custom price & stock adjustments.
+ */
+export async function lookupGlobalProductByBarcode(barcode: string): Promise<Product | null> {
+  const cleanCode = barcode.trim();
+  if (!cleanCode) return null;
+
+  // 1. Check local DB first (works 100% offline)
+  const localMatch = await db.products
+    .filter((p) => p.deleted_at === null && Boolean(p.barcode) && p.barcode!.toLowerCase() === cleanCode.toLowerCase())
+    .first();
+  if (localMatch) return localMatch;
+
+  // 2. If offline, return null immediately
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return null;
+  }
+
+  // 3. Check remote Supabase catalog if online
+  try {
+    const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
+    const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
+    if (url && anonKey && !url.includes('placeholder')) {
+      const resp = await fetch(`${url}/rest/v1/products?barcode=eq.${encodeURIComponent(cleanCode)}&limit=1`, {
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+      });
+      if (resp.ok) {
+        const rows = await resp.json();
+        if (rows && rows.length > 0) {
+          const remoteProd = rows[0];
+          return {
+            id: remoteProd.id || crypto.randomUUID(),
+            shop_id: remoteProd.shop_id,
+            name: remoteProd.name,
+            search_key: remoteProd.search_key || remoteProd.name.toLowerCase(),
+            buying_price: remoteProd.buying_price != null ? toKES(Number(remoteProd.buying_price)) : null,
+            selling_price: remoteProd.selling_price != null ? toKES(Number(remoteProd.selling_price)) : toKES(100),
+            low_limit: remoteProd.low_limit ?? 5,
+            unit: remoteProd.unit || 'pcs',
+            barcode: remoteProd.barcode,
+            image_emoji: remoteProd.image_emoji || '📦',
+            is_active: true,
+            pack_size: remoteProd.pack_size ?? null,
+            fractional_prices: remoteProd.fractional_prices || undefined,
+            created_at: remoteProd.created_at || serverNow(),
+            updated_at: remoteProd.updated_at || serverNow(),
+            deleted_at: null,
+            device_id: 'global-catalog',
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Could not query global catalog from Supabase:', err);
+  }
+
+  return null;
+}
+
 

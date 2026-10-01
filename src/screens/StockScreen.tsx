@@ -16,6 +16,7 @@ import {
   Scale,
   PlusCircle,
   XCircle,
+  Camera,
 } from 'lucide-react';
 import {
   db,
@@ -25,6 +26,7 @@ import {
   getShopMeta,
   getOrCreateDeviceId,
   syncWriteThrough,
+  lookupGlobalProductByBarcode,
   type OutboxEntry,
   type Product,
   type StockMovement,
@@ -40,6 +42,7 @@ import { Button } from '../components/Button';
 import { Sheet } from '../components/Sheet';
 import { RestockListModal } from '../components/RestockListModal';
 import { SingleProductRestockModal } from '../components/SingleProductRestockModal';
+import { BarcodeScannerModal } from '../components/BarcodeScannerModal';
 import { FirstProductGuide, type ProductStarterTemplate } from '../components/FirstProductGuide';
 import { getRelevantEmoji, POPULAR_RETAIL_EMOJIS } from '../lib/emojiHelper';
 import { translations, type Language } from '../lib/i18n';
@@ -93,6 +96,43 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   const [lowLimitStr, setLowLimitStr] = useState('5');
   const [packSizeStr, setPackSizeStr] = useState('');
   const [emoji, setEmoji] = useState('');
+  const [barcode, setBarcode] = useState('');
+
+  // Barcode Scanner State for Stock
+  const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
+
+  const handleStockScannedBarcode = async (code: string) => {
+    const cleanCode = code.trim().toLowerCase();
+    const found = products.find((p) => p.barcode && p.barcode.toLowerCase() === cleanCode);
+    if (found) {
+      setRestockingProduct(found);
+      return;
+    }
+
+    const globalMatch = await lookupGlobalProductByBarcode(code);
+    if (globalMatch) {
+      openAddModal({
+        name: globalMatch.name,
+        emoji: globalMatch.image_emoji,
+        sellingPrice: Number(globalMatch.selling_price),
+        buyingPrice: globalMatch.buying_price ? Number(globalMatch.buying_price) : undefined,
+        unit: globalMatch.unit,
+        initialQty: 10,
+        fractionalPrices: globalMatch.fractional_prices,
+        barcode: globalMatch.barcode || code.trim(),
+      } as any);
+      if (typeof window !== 'undefined') {
+        window.alert(
+          isEn
+            ? `Found global product "${globalMatch.name}"! Verify or modify the prices and stock quantities for your shop.`
+            : `Imepata bidhaa ya kimataifa "${globalMatch.name}"! Rekebisha bei na idadi ya stock kulingana na duka lako.`
+        );
+      }
+    } else {
+      openAddModal();
+      setBarcode(code.trim());
+    }
+  };
 
   // Fractional Prices (e.g. Sugar, Rice, Cooking Oil quarter & half quantities)
   const [enableFractional, setEnableFractional] = useState(false);
@@ -202,6 +242,11 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setPackSizeStr('');
     const defaultEmoji = template?.emoji || (initialName ? getRelevantEmoji(initialName, u) : '');
     setEmoji(defaultEmoji);
+    if ((template as any)?.barcode) {
+      setBarcode((template as any).barcode);
+    } else if (!barcode) {
+      setBarcode('');
+    }
 
     if (template?.fractionalPrices && template.fractionalPrices.length > 0) {
       setEnableFractional(true);
@@ -247,6 +292,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     setLowLimitStr(String(p.low_limit));
     setPackSizeStr(p.pack_size ? String(p.pack_size) : '');
     setEmoji(p.image_emoji || '');
+    setBarcode(p.barcode || '');
 
     if (p.fractional_prices && p.fractional_prices.length > 0) {
       setEnableFractional(true);
@@ -274,6 +320,23 @@ export const StockScreen: React.FC<StockScreenProps> = ({
     if (sellingNum <= 0) {
       alert('Tafadhali weka bei sahihi ya kuuza.');
       return;
+    }
+
+    const cleanBarcode = barcode.trim() || null;
+    if (cleanBarcode) {
+      const existingWithBarcode = products.find(
+        (p) => p.barcode && p.barcode.toLowerCase() === cleanBarcode.toLowerCase() && p.id !== (editingProduct?.id || '')
+      );
+      if (existingWithBarcode) {
+        if (typeof window !== 'undefined') {
+          window.alert(
+            isEn
+              ? `Barcode "${cleanBarcode}" is already assigned to "${existingWithBarcode.name}". Please use Restock instead of creating a duplicate product!`
+              : `Nambari ya mwambaa "${cleanBarcode}" tayari inatumika kwa "${existingWithBarcode.name}". Tafuta bidhaa hii na uongeze stock badala ya kutengeneza nakala mpya!`
+          );
+        }
+        return;
+      }
     }
 
     const now = serverNow();
@@ -310,6 +373,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           pack_size: packSize,
           fractional_prices,
           image_emoji: emoji,
+          barcode: cleanBarcode,
           updated_at: now,
         };
 
@@ -378,7 +442,7 @@ export const StockScreen: React.FC<StockScreenProps> = ({
         selling_price: sellingPrice,
         low_limit: lowLimit,
         unit,
-        barcode: null,
+        barcode: cleanBarcode,
         image_emoji: emoji,
         is_active: true,
         pack_size: packSize,
@@ -566,15 +630,34 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           </p>
         </div>
 
-        <Button
-          variant="gradient"
-          size="sm"
-          onClick={() => openAddModal()}
-          className="flex items-center gap-1.5 shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          {isEn ? 'Add Product' : 'Ongeza'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="relative group">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsBarcodeScannerOpen(true)}
+              className="flex items-center gap-1.5 border-emerald-600 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-bold text-xs cursor-pointer"
+              title={isEn ? 'Scan products with global barcodes' : 'Skani bidhaa zenye barcode za kimataifa'}
+            >
+              <Camera className="w-4 h-4 text-emerald-600" />
+              {isEn ? 'Scan Stock' : 'Skani Stock'}
+            </Button>
+            {/* Tooltip */}
+            <div className="absolute right-0 top-full mt-1.5 hidden group-hover:block z-30 w-64 p-2.5 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl leading-relaxed">
+              💡 {isEn ? 'Ideal for products with global barcodes (EAN/UPC). Scans instantly and auto-populates names across shops while working 100% offline!' : 'Inafaa kwa bidhaa zenye barcode za kimataifa. Inatambua majina kiotomatiki nje ya mtandao!'}
+            </div>
+          </div>
+
+          <Button
+            variant="gradient"
+            size="sm"
+            onClick={() => openAddModal()}
+            className="flex items-center gap-1.5 shadow-sm text-xs font-bold cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            {isEn ? 'Add Product' : 'Ongeza'}
+          </Button>
+        </div>
       </div>
 
       {/* Feature Navigation Action Strip */}
@@ -895,6 +978,39 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                   className="w-full h-11 px-3 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500 font-medium"
                 />
               </div>
+            </div>
+
+            {/* Barcode / Scan Code */}
+            <div className="space-y-1">
+              <label className="block text-[11px] font-bold text-slate-600">
+                {isEn ? 'Barcode / Scan Code (Optional):' : 'Nambari ya Mwambaa / Barcode (Si lazima):'}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={barcode}
+                  onChange={(e) => setBarcode(e.target.value)}
+                  placeholder={isEn ? 'e.g. 6161101000123' : 'Mfano: 6161101000123'}
+                  className="w-full h-11 px-3 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500 font-mono font-bold"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProductModalOpen(false);
+                    setIsBarcodeScannerOpen(true);
+                  }}
+                  className="h-11 px-3.5 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center gap-1 shrink-0 hover:bg-emerald-500 shadow-2xs cursor-pointer"
+                  title={isEn ? 'Scan barcode with camera' : 'Skani barcode na kamera'}
+                >
+                  <Camera className="w-4 h-4" />
+                  <span className="hidden sm:inline">{isEn ? 'Scan' : 'Skani'}</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                {isEn
+                  ? 'Scan or enter a unique barcode. Used for quick selling and scanning in stock.'
+                  : 'Skani au ingiza nambari ya kipekee. Inatumika kuuza na kuongeza stock kwa haraka.'}
+              </p>
             </div>
 
             {/* Quick Emoji Relevancy Suggestions & Flexibility Bar */}
@@ -1404,6 +1520,14 @@ export const StockScreen: React.FC<StockScreenProps> = ({
             setTimeout(() => setRestockNotice(null), 5000);
           }
         }}
+      />
+
+      {/* Barcode Scanner Modal for Stock */}
+      <BarcodeScannerModal
+        isOpen={isBarcodeScannerOpen}
+        onClose={() => setIsBarcodeScannerOpen(false)}
+        onBarcodeScanned={handleStockScannedBarcode}
+        language={language}
       />
     </div>
   );

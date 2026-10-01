@@ -30,6 +30,10 @@ import {
   serverNow,
   generateSearchKey,
   seedKenyanCatalog,
+  getShopMeta,
+  getOrCreateDeviceId,
+  syncWriteThrough,
+  lookupGlobalProductByBarcode,
   type Product,
   type HeldCart,
   type UserRole,
@@ -181,7 +185,51 @@ export const SellScreen: React.FC<SellScreenProps> = ({
         );
         setTimeout(() => setScanSuccessToast(null), 3500);
       } else {
-        setUnrecognizedBarcode(barcode);
+        const globalMatch = await lookupGlobalProductByBarcode(barcode);
+        if (globalMatch) {
+          const shop = await getShopMeta();
+          const deviceId = await getOrCreateDeviceId();
+          const now = serverNow();
+          const newProductId = crypto.randomUUID();
+          const localProd: Product = {
+            id: newProductId,
+            shop_id: shop.shop_id,
+            name: globalMatch.name,
+            search_key: generateSearchKey(globalMatch.name),
+            buying_price: globalMatch.buying_price,
+            selling_price: globalMatch.selling_price,
+            low_limit: globalMatch.low_limit,
+            unit: globalMatch.unit,
+            barcode: barcode.trim(),
+            image_emoji: globalMatch.image_emoji,
+            is_active: true,
+            pack_size: globalMatch.pack_size,
+            fractional_prices: globalMatch.fractional_prices,
+            created_at: now,
+            updated_at: now,
+            deleted_at: null,
+            device_id: deviceId,
+          };
+          await db.products.put(localProd);
+          void syncWriteThrough({
+            id: newProductId,
+            table: 'products',
+            op: 'insert',
+            payload: localProd as unknown as Record<string, unknown>,
+            attempts: 0,
+            next_attempt_at: now,
+          });
+
+          addProductToCart(localProd);
+          setScanSuccessToast(
+            isEn
+              ? `🌐 Global match found! Added ${localProd.name} - Price ${formatKES(localProd.selling_price)}`
+              : `🌐 Bidhaa ya kimataifa! Imeongeza ${localProd.name} - Bei ${formatKES(localProd.selling_price)}`
+          );
+          setTimeout(() => setScanSuccessToast(null), 4000);
+        } else {
+          setUnrecognizedBarcode(barcode);
+        }
       }
     } catch (err) {
       console.error('Barcode lookup error:', err);
@@ -910,16 +958,22 @@ export const SellScreen: React.FC<SellScreenProps> = ({
             </button>
           )}
 
-          {/* Scan with Camera Button */}
-          <button
-            type="button"
-            onClick={() => setIsBarcodeScannerOpen(true)}
-            className="h-11 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 transition flex items-center gap-1.5 text-xs font-black shadow-sm shrink-0 cursor-pointer"
-            title={isEn ? 'Scan Barcode with Camera' : 'Skania Msimbo kwa Kamera'}
-          >
-            <Camera className="w-4 h-4" />
-            <span className="hidden sm:inline">{isEn ? 'Scan' : 'Skania'}</span>
-          </button>
+          {/* Scan with Camera Button with Tooltip */}
+          <div className="relative group shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsBarcodeScannerOpen(true)}
+              className="h-11 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 transition flex items-center gap-1.5 text-xs font-black shadow-sm cursor-pointer"
+              title={isEn ? 'Scan Barcode with Camera' : 'Skania Msimbo kwa Kamera'}
+            >
+              <Camera className="w-4 h-4" />
+              <span className="hidden sm:inline">{isEn ? 'Scan' : 'Skania'}</span>
+            </button>
+            {/* Tooltip */}
+            <div className="absolute right-0 top-full mt-1.5 hidden group-hover:block z-30 w-64 p-2.5 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl leading-relaxed">
+              💡 {isEn ? 'Ideal for products with global barcodes (EAN/UPC). Instantly recognizes items across shops or adds them to your cart 100% offline!' : 'Inafaa kwa bidhaa zenye barcode za kimataifa. Inatambua bidhaa na kuweka kwenye gari nje ya mtandao!'}
+            </div>
+          </div>
 
           {/* Quick Action (+) Button for Expenses, Products, Debts (§Feature 7) */}
           <button

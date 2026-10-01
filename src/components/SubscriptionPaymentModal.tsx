@@ -218,6 +218,19 @@ export const SubscriptionPaymentModal: React.FC<SubscriptionPaymentModalProps> =
               </span>
             </div>
 
+            {/* 11:00 AM Payment Deadline Notice */}
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl flex items-start gap-2 text-xs text-amber-900 leading-relaxed">
+              <span className="text-base shrink-0">⚠️</span>
+              <div>
+                <strong className="block font-black text-amber-950">
+                  {isEn ? 'Daily Payment Deadline (11:00 AM):' : 'Mwisho wa Malipo ya Kila Siku (Saa 5 Asubuhi):'}
+                </strong>
+                {isEn
+                  ? 'To ensure uninterrupted service and avoid service pause, daily subscription payments should be made before 11:00 AM.'
+                  : 'Ili kuepuka kukatizwa kwa huduma, malipo ya ada ya kila siku yafanywe kabla ya saa 5 asubuhi (11:00 AM).'}
+              </div>
+            </div>
+
             {/* Official Equity Till Account Card */}
             <div className="p-3.5 bg-slate-50 border-2 border-emerald-300 rounded-2xl space-y-2.5">
               <div className="flex items-center justify-between">

@@ -351,7 +351,7 @@ export const translations: Record<Language, Translations> = {
     currentPlan: 'Daily Access',
     trialStatus: 'KES 30 / Day',
     trialEndsDate: (date) => `Paid until ${date}`,
-    pricingPendingNotice: 'Daily duka subscription is KES 30/day. Pay easily via Equity Till (Paybill 247247, Account 253499).',
+    pricingPendingNotice: 'Daily duka subscription is KES 30/day. Please pay before 11:00 AM via Equity Till (Paybill 247247, Account 253499).',
     preferredBillingMethod: 'Payment Method',
     mpesaOption: 'Equity Till (Paybill)',
     cashOption: 'Equity Till (Manual)',
@@ -360,7 +360,7 @@ export const translations: Record<Language, Translations> = {
     dailyRate: 'KES 30 / day',
     subscriptionDue: 'Payment Due (KES 30)',
     subscriptionActive: 'Active Subscription',
-    tillPaymentNotice: 'Pay via Equity Till (Paybill 247247, Account 253499) using your registered shop phone number.',
+    tillPaymentNotice: 'Please pay before 11:00 AM via Equity Till (Paybill 247247, Account 253499) using your registered shop phone number.',
 
     // Business Card / Share
     shareShopCardBtn: 'Share Shop Business Card',
@@ -581,7 +581,7 @@ export const translations: Record<Language, Translations> = {
     currentPlan: 'Ufikiaji wa Kila Siku wa Duka',
     trialStatus: 'KES 30 / Siku',
     trialEndsDate: (date) => `Umelipa hadi ${date}`,
-    pricingPendingNotice: 'Ada ya duka ni KES 30 kwa siku. Lipa kwa urahisi kupitia Equity Till (Paybill 247247, Account 253499).',
+    pricingPendingNotice: 'Ada ya duka ni KES 30 kwa siku. Tafadhali lipa kabla ya saa 5 asubuhi (11:00 AM) kupitia Equity Till (Paybill 247247, Account 253499).',
     preferredBillingMethod: 'Njia ya Kulipa',
     mpesaOption: 'Equity Till (Paybill)',
     cashOption: 'Equity Till (Moja kwa Moja)',
@@ -590,7 +590,7 @@ export const translations: Record<Language, Translations> = {
     dailyRate: 'KES 30 / siku',
     subscriptionDue: 'Malipo ya Ada Yanahitajika',
     subscriptionActive: 'Uanachama Uko Hai',
-    tillPaymentNotice: 'Lipa kupitia Equity Till (Paybill 247247, Account 253499) ukitumia namba yako ya simu iliyosajiliwa.',
+    tillPaymentNotice: 'Tafadhali lipa kabla ya saa 5 asubuhi (11:00 AM) kupitia Equity Till (Paybill 247247, Account 253499) ukitumia namba yako ya simu.',
 
     // Business Card / Share
     shareShopCardBtn: 'Shiriki Wasifu wa Duka',
