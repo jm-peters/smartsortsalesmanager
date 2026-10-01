@@ -173,19 +173,47 @@ export const SellScreen: React.FC<SellScreenProps> = ({
     });
   };
 
+  const playSuccessBeep = () => {
+    try {
+      if (typeof window === 'undefined') return;
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContext) return;
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+    } catch {
+      // Ignore
+    }
+  };
+
   const handleScannedBarcode = async (barcode: string) => {
     try {
-      const existingProduct = await db.products.where('barcode').equals(barcode).first();
+      const cleanCode = barcode.trim();
+      if (!cleanCode) return;
+
+      const existingProduct = await db.products
+        .filter((p) => p.deleted_at === null && Boolean(p.barcode) && p.barcode!.trim().toLowerCase() === cleanCode.toLowerCase())
+        .first();
+
       if (existingProduct) {
         addProductToCart(existingProduct);
+        playSuccessBeep();
         setScanSuccessToast(
           isEn
-            ? `✅ ${existingProduct.name} - Price ${formatKES(existingProduct.selling_price)} added!`
-            : `✅ ${existingProduct.name} - Bei ${formatKES(existingProduct.selling_price)} imeongezwa!`
+            ? `✅ ${existingProduct.name} (Qty +1) - ${formatKES(existingProduct.selling_price)} added!`
+            : `✅ ${existingProduct.name} (Idadi +1) - Bei ${formatKES(existingProduct.selling_price)} imeongezwa!`
         );
         setTimeout(() => setScanSuccessToast(null), 3500);
       } else {
-        const globalMatch = await lookupGlobalProductByBarcode(barcode);
+        const globalMatch = await lookupGlobalProductByBarcode(cleanCode);
         if (globalMatch) {
           const shop = await getShopMeta();
           const deviceId = await getOrCreateDeviceId();
@@ -200,7 +228,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
             selling_price: globalMatch.selling_price,
             low_limit: globalMatch.low_limit,
             unit: globalMatch.unit,
-            barcode: barcode.trim(),
+            barcode: cleanCode,
             image_emoji: globalMatch.image_emoji,
             is_active: true,
             pack_size: globalMatch.pack_size,
@@ -221,14 +249,15 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           });
 
           addProductToCart(localProd);
+          playSuccessBeep();
           setScanSuccessToast(
             isEn
-              ? `🌐 Global match found! Added ${localProd.name} - Price ${formatKES(localProd.selling_price)}`
-              : `🌐 Bidhaa ya kimataifa! Imeongeza ${localProd.name} - Bei ${formatKES(localProd.selling_price)}`
+              ? `🌐 Global match! Added ${localProd.name} - ${formatKES(localProd.selling_price)}`
+              : `🌐 Bidhaa ya kimataifa! Imeongeza ${localProd.name} - ${formatKES(localProd.selling_price)}`
           );
           setTimeout(() => setScanSuccessToast(null), 4000);
         } else {
-          setUnrecognizedBarcode(barcode);
+          setUnrecognizedBarcode(cleanCode);
         }
       }
     } catch (err) {

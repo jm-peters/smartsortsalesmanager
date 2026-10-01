@@ -231,7 +231,7 @@ export async function updateLoanApplicationStatus(
       await saveShopMeta({
         active_loan_amount: amt,
         active_loan_balance: totalRepay,
-        active_loan_status: 'disbursed',
+        active_loan_status: newStatus === 'approved' ? 'approved' : 'disbursed',
         active_loan_duration: apps[idx].duration_days,
         active_loan_due_date: dueDate,
       });
