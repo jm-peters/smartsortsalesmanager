@@ -14,6 +14,7 @@ import {
   db,
   setClockSkew,
   registerDirectSyncDispatcher,
+  recalculateStockFromLedger,
   type OutboxEntry,
 } from '../db/local';
 import type { RemoteAdapter } from '../remote/types';
@@ -53,6 +54,7 @@ class SyncEngine {
   private syncTimer: any = null;
   private connectivityWatchTimer: any = null;
   private reconnectStabilizeTimer: any = null;
+  private broadcastChannel: any = null;
   private listeners: SyncListener[] = [];
   private currentStatus: SyncStatus = {
     isSyncing: false,
@@ -138,6 +140,28 @@ class SyncEngine {
   private initNetworkListeners() {
     if (typeof window === 'undefined') return;
 
+    // Cross-Tab Real-time Inventory Channel
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        this.broadcastChannel = new BroadcastChannel('smartsort_inventory_sync');
+        this.broadcastChannel.onmessage = async (event: MessageEvent) => {
+          if (event.data?.type === 'STOCK_CHANGED') {
+            await recalculateStockFromLedger();
+            void this.triggerSync();
+          }
+        };
+      }
+    } catch {
+      // ignore
+    }
+
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'smartsort_inventory_pulse') {
+        void recalculateStockFromLedger();
+        void this.triggerSync();
+      }
+    });
+
     window.addEventListener('online', () => {
       void this.handleDeviceOnline();
     });
@@ -181,7 +205,7 @@ class SyncEngine {
       conn.addEventListener('change', () => {
         this.startPeriodicSync();
         const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : true;
-        if (onlineNow && conn. effectiveType !== 'offline') {
+        if (onlineNow && conn.effectiveType !== 'offline') {
           void this.handleDeviceOnline();
         }
       });
@@ -270,10 +294,10 @@ class SyncEngine {
   private startPeriodicSync() {
     if (this.syncTimer) clearInterval(this.syncTimer);
 
-    let interval = 20_000; // Fast 20s background sync
+    let interval = 3500; // Fast 3.5s real-time background sync across sellers & devices
     const conn = (navigator as any).connection;
     if (conn && (conn.saveData || conn.effectiveType === '2g')) {
-      interval = 120_000; // 2 min interval on slow/data-saver connections
+      interval = 30_000; // 30s interval on slow/data-saver connections
     }
 
     this.syncTimer = setInterval(() => {
@@ -411,6 +435,18 @@ class SyncEngine {
     } else {
       this.currentStatus.lastSyncedAt = new Date();
       this.currentStatus.lastError = null;
+    }
+
+    // Broadcast change to other open seller tabs/windows
+    try {
+      if (typeof window !== 'undefined') {
+        if (this.broadcastChannel) {
+          this.broadcastChannel.postMessage({ type: 'STOCK_CHANGED', timestamp: Date.now() });
+        }
+        localStorage.setItem('smartsort_inventory_pulse', String(Date.now()));
+      }
+    } catch {
+      // ignore
     }
 
     await this.updateCounts();
@@ -700,6 +736,18 @@ class SyncEngine {
         last_change_seq: Math.max(rawCursor, pullResult.maxChangeSeq),
         last_pull_at: new Date().toISOString(),
       });
+    }
+
+    // Recalculate full product stock quantities from the synchronized ledger
+    await recalculateStockFromLedger();
+
+    // Notify other tabs and reactive UI subscribers
+    try {
+      if (typeof window !== 'undefined' && this.broadcastChannel) {
+        this.broadcastChannel.postMessage({ type: 'STOCK_CHANGED', timestamp: Date.now() });
+      }
+    } catch {
+      // ignore
     }
   }
 }

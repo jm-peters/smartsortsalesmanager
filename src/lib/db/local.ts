@@ -351,6 +351,14 @@ export async function syncWriteThrough(input: OutboxEntry | OutboxEntry[]): Prom
   const entries = Array.isArray(input) ? input : [input];
   if (entries.length === 0) return;
 
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('smartsort_inventory_pulse', String(Date.now()));
+    }
+  } catch {
+    // ignore
+  }
+
   if (directSyncDispatcher) {
     await directSyncDispatcher(entries);
     return;

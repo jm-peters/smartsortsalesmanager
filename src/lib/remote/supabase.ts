@@ -193,11 +193,21 @@ export class SupabaseAdapter implements RemoteAdapter {
 
       const query = new URLSearchParams(queryParams);
 
-      const resp = await fetch(`${this.url}/rest/v1/${table}?${query}`, {
-        headers: {
-          apikey: this.anonKey,
-        },
+      let resp = await fetch(`${this.url}/rest/v1/${table}?${query}`, {
+        headers: this.getAuthHeaders(),
       });
+
+      // Fallback query if change_seq column is absent on remote table
+      if (!resp.ok) {
+        const fallbackParams: Record<string, string> = {
+          ...(table === 'shops' ? { id: `eq.${shopId}` } : { shop_id: `eq.${shopId}` }),
+          limit: String(limit),
+        };
+        const fallbackQuery = new URLSearchParams(fallbackParams);
+        resp = await fetch(`${this.url}/rest/v1/${table}?${fallbackQuery}`, {
+          headers: this.getAuthHeaders(),
+        });
+      }
 
       if (!resp.ok) {
         throw new Error(`Pull failed for ${table}: ${resp.statusText}`);
