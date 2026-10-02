@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import { AdminApp } from './admin/AdminApp.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
 import { registerSW } from 'virtual:pwa-register';
@@ -30,10 +31,17 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// Determine if we should mount the standalone Super-Admin Portal:
+// 1. Check if env VITE_APP_MODE is 'admin'
+// 2. Check if current hostname is 'admin.roastme.site'
+const isAdminMode =
+  (import.meta.env.VITE_APP_MODE === 'admin') ||
+  (typeof window !== 'undefined' && window.location.hostname === 'admin.roastme.site');
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <App />
+      {isAdminMode ? <AdminApp /> : <App />}
     </ErrorBoundary>
   </StrictMode>
 );
