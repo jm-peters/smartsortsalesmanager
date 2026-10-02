@@ -101,6 +101,7 @@ interface ProfileScreenProps {
   onUpdateShop: (shop: ShopMeta) => void;
   onUpdateUser: (user: ShopUser) => void;
   onNavigateTab: (tab: 'sell' | 'stock' | 'deni' | 'reports') => void;
+  onOpenAdminPortal?: () => void;
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
@@ -110,6 +111,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onUpdateShop,
   onUpdateUser,
   onNavigateTab,
+  onOpenAdminPortal,
 }) => {
   const t = translations[language];
   const isEn = language === 'en';
@@ -566,6 +568,37 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <span className="text-slate-300">•</span>
             <span className="text-slate-500">@{user.username || 'johnkamau'}</span>
           </div>
+
+          {/* Super-Admin Central Control Center Launcher */}
+          {isPeterNgecu && onOpenAdminPortal && (
+            <div className="mt-3 p-3 bg-slate-950 border border-slate-800 rounded-2xl text-white shadow-xl flex items-center justify-between gap-3 animate-in fade-in duration-200">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-black shadow-md">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-black text-white flex items-center gap-1.5">
+                    <span>Super-Admin Portal</span>
+                    <span className="text-[8px] font-black uppercase px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                      CENTRAL
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    {isEn ? 'Manage subscriptions, shops & loan credit lines' : 'Simamia maduka na viwango vya mikopo'}
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                variant="gradient"
+                size="sm"
+                onClick={onOpenAdminPortal}
+                className="font-bold text-xs shrink-0 py-2 px-3 shadow-md cursor-pointer"
+              >
+                {isEn ? 'Launch Portal →' : 'Fungua Portal →'}
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 

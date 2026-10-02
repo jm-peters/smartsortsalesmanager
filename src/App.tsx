@@ -29,6 +29,7 @@ import { ReportsScreen } from './screens/ReportsScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { AuthScreen } from './screens/AuthScreen';
+import { AdminPortal } from './admin/AdminPortal';
 import { OfflineBanner } from './components/OfflineBanner';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { ProfileCompletionBanner } from './components/ProfileCompletionBanner';
@@ -58,6 +59,7 @@ export default function App() {
   // Active step modal from completion banner
   const [activeStepModal, setActiveStepModal] = useState<StepType | null>(null);
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
+  const [isAdminPortalOpen, setIsAdminPortalOpen] = useState(false);
 
   const t = translations[language];
 
@@ -147,6 +149,19 @@ export default function App() {
         }}
         language={language}
         onToggleLanguage={handleToggleLanguage}
+      />
+    );
+  }
+
+  // Standalone Super-Admin Portal for Central Platform Administration
+  if (isAdminPortalOpen && shop && user) {
+    return (
+      <AdminPortal
+        user={user}
+        shop={shop}
+        language={language}
+        onCloseAdminPortal={() => setIsAdminPortalOpen(false)}
+        onUpdateShop={(updatedShop) => setShop(updatedShop)}
       />
     );
   }
@@ -289,6 +304,7 @@ export default function App() {
               onUpdateShop={(s) => setShop(s)}
               onUpdateUser={(u) => setUser(u)}
               onNavigateTab={(tab) => setCurrentTab(tab)}
+              onOpenAdminPortal={() => setIsAdminPortalOpen(true)}
             />
           )}
 
