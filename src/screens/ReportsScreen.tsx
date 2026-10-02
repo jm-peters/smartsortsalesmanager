@@ -35,6 +35,7 @@ import {
   getShopMeta,
   saveShopMeta,
   voidSale,
+  getShopUser,
 } from '../lib/db/local';
 import {
   toKES,
@@ -104,6 +105,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'stock_velocity' | 'past_sales'>('overview');
 
   const shopMeta = useLiveQuery(() => getShopMeta(), []);
+  const loggedInUser = useLiveQuery(() => getShopUser(), []);
 
   // Update credit in gross sales setting when shopMeta loads
   useEffect(() => {
@@ -225,9 +227,10 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       (s) =>
         s.created_at >= startDate &&
         s.created_at <= endDate &&
-        s.status === 'completed'
+        s.status === 'completed' &&
+        (isOwner || !loggedInUser || s.created_by === loggedInUser.id)
     );
-  }, [allSales, startDate, endDate]);
+  }, [allSales, startDate, endDate, isOwner, loggedInUser]);
 
   // Search-filtered sales (for Past Sales list & search bar)
   const searchFilteredSales = useMemo(() => {

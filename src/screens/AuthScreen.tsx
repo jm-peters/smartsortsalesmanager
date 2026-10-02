@@ -2508,8 +2508,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       />
                       <span className="text-[10px] text-slate-400 block text-center mt-1">
                         {language === 'en'
-                          ? `Verification code has been sent to ${email}.`
-                          : `Msimbo wa uthibitishaji umetumwa kwa ${email}.`}
+                          ? `Verification code has been sent to ${email}. If you do not see it within 2 minutes, check your Spam/Junk folder.`
+                          : `Msimbo wa uthibitishaji umetumwa kwa ${email}. Ikiwa huoni ndani ya dakika 2, angalia folda ya Spam/Junk.`}
                       </span>
                     </div>
 
@@ -2617,6 +2617,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       autoFocus
                     />
                   </div>
+                  <span className="text-[10px] text-slate-400 block mt-1">
+                    {language === 'en'
+                      ? 'Note: Please check your Spam/Junk folder if you do not receive the recovery email within 2 minutes.'
+                      : 'Kumbuka: Tafadhali angalia folda yako ya Spam/Junk ikiwa hutapokea barua pepe ya siri ndani ya dakika 2.'}
+                  </span>
                 </div>
 
                 <Button

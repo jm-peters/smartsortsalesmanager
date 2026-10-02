@@ -613,8 +613,8 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
                   
                   <span className="text-[9px] text-slate-400 block pt-1">
                     {language === 'en'
-                      ? 'They will follow this link to set their password and 4-digit unlock code.'
-                      : 'Watafuata kiunga hiki ili kuweka nenosiri na nambari ya siri ya kufungua.'}
+                      ? 'They will follow this link to set their password and 4-digit unlock code. Advise them to check their Spam/Junk folder if the email is not received.'
+                      : 'Watafuata kiunga hiki ili kuweka nenosiri na nambari ya siri. Washauri waangalie folda ya Spam/Junk ikiwa hawajaona barua pepe.'}
                   </span>
                 </div>
               ) : (
