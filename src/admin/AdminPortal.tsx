@@ -51,6 +51,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const isEn = language === 'en';
   const [activeTab, setActiveTab] = useState<'overview' | 'shops' | 'subscriptions' | 'loans' | 'system'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'has_limit' | 'no_limit' | 'active_loans'>('all');
 
   // Admin Data State
   const [loanApplications, setLoanApplications] = useState<LoanApplication[]>(() => getAllLoanApplications());
@@ -403,25 +404,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         {/* SHOPS TAB */}
         {activeTab === 'shops' && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 border-b border-slate-800 pb-3">
               <div>
-                <h3 className="text-sm font-black text-white uppercase">
+                <h3 className="text-sm font-black text-white uppercase font-sans">
                   {isEn ? 'All Registered Shops Directory' : 'Orodha ya Maduka Yote'}
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  {isEn ? 'Manage duka accounts, active subscriptions & stock credit lines' : 'Simamia maduka na viwango vya mikopo'}
+                  {isEn ? 'Search by Shop Name, Owner Email, Owner Name or Phone number' : 'Tafuta duka kwa jina au barua pepe'}
                 </p>
               </div>
 
-              <div className="relative w-full sm:w-64">
-                <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={isEn ? 'Search shop name or owner phone...' : 'Tafuta duka au nambari...'}
-                  className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-emerald-500"
-                />
+              <div className="flex flex-col sm:flex-row items-stretch gap-2 shrink-0">
+                {/* Search Input */}
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={isEn ? 'Search name, email, phone...' : 'Tafuta jina, barua pepe...'}
+                    className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-emerald-500 font-medium"
+                  />
+                </div>
+
+                {/* Filter Dropdown */}
+                <select
+                  value={filterStatus}
+                  onChange={(e: any) => setFilterStatus(e.target.value)}
+                  className="px-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-300 font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
+                >
+                  <option value="all">{isEn ? 'All Shops' : 'Maduka Yote'}</option>
+                  <option value="has_limit">{isEn ? 'With Credit Limit' : 'Yenye Kikopo'}</option>
+                  <option value="no_limit">{isEn ? 'Without Credit' : 'Yasiyo na Kikopo'}</option>
+                  <option value="active_loans">{isEn ? 'Active Loan Balances' : 'Yenye Deni la Mkopo'}</option>
+                </select>
               </div>
             </div>
 
@@ -445,7 +461,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </tr>
                   ) : (
                     merchantShops
-                      .filter((s) => !searchQuery || s.shop_name.toLowerCase().includes(searchQuery.toLowerCase()) || s.phone?.includes(searchQuery))
+                      .filter((s) => {
+                        // 1. Search Query filter (shop name, owner name, contact email, phone)
+                        const q = searchQuery.toLowerCase().trim();
+                        if (q) {
+                          const matchesName = s.shop_name.toLowerCase().includes(q);
+                          const matchesEmail = s.contact_email?.toLowerCase().includes(q);
+                          const matchesOwner = s.owner_name.toLowerCase().includes(q);
+                          const matchesPhone = s.phone?.includes(q);
+                          if (!matchesName && !matchesEmail && !matchesOwner && !matchesPhone) {
+                            return false;
+                          }
+                        }
+
+                        // 2. Filter status filter
+                        if (filterStatus === 'has_limit') {
+                          return (s.loan_limit || 0) > 0;
+                        }
+                        if (filterStatus === 'no_limit') {
+                          return (s.loan_limit || 0) === 0;
+                        }
+                        if (filterStatus === 'active_loans') {
+                          return (s.active_loan_balance || 0) > 0;
+                        }
+
+                        return true;
+                      })
                       .map((s) => (
                         <tr key={s.shop_id} className="hover:bg-slate-800/40 transition">
                           <td className="py-3 px-3">
