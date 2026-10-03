@@ -24,6 +24,7 @@ import {
   updateSubscriptionClaimStatus,
   updateLoanApplicationStatus,
   syncLoansAndShopsWithCloud,
+  adminUpdateShopSubscription,
   type LoanApplication,
   type EligibleShopAlert,
   type SubscriptionPaymentClaim,
@@ -152,6 +153,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     void refreshData();
   };
 
+  const handleUpdateSubscriptionDays = async (shopId: string, currentExpiryStr: string | undefined, deltaDays: number) => {
+    // Determine base date
+    const baseDate = currentExpiryStr ? new Date(currentExpiryStr) : new Date();
+    const finalBase = isNaN(baseDate.getTime()) ? new Date() : baseDate;
+    
+    finalBase.setDate(finalBase.getDate() + deltaDays);
+    const newExpiryStr = finalBase.toISOString();
+    const planStatus = finalBase.getTime() > Date.now() ? 'active' : 'expired';
+
+    await adminUpdateShopSubscription(shopId, newExpiryStr, planStatus);
+    
+    setActionNotice(isEn 
+      ? `✅ Adjusted subscription for shop by ${deltaDays > 0 ? '+' : ''}${deltaDays} days.` 
+      : `✅ Imerekebisha muda wa duka kwa siku ${deltaDays > 0 ? '+' : ''}${deltaDays}.`
+    );
+    setTimeout(() => setActionNotice(null), 4000);
+    void refreshData();
+  };
+
   // Aggregated Stats
   const totalShopsCount = Math.max(merchantShops.length, 1);
   const activeSubscriptionsCount = merchantShops.filter((s) => s.loan_limit > 0).length + 1;
@@ -254,6 +274,81 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
+            {/* System Attention & Alert Panel */}
+            <div className="space-y-3 bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+              <h3 className="text-xs font-black uppercase text-slate-300 flex items-center gap-1.5 border-b border-slate-800 pb-2">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping inline-block" />
+                <span>{isEn ? 'System Alerts & Attention' : 'Tahadhari na Hali ya Mfumo'}</span>
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                {/* Supabase Status Alert */}
+                {dbSyncStatus !== 'connected' && (
+                  <div className="p-3 bg-red-950/60 border border-red-500/30 rounded-xl flex items-center gap-2.5 text-red-300">
+                    <span className="text-xl">⚠️</span>
+                    <div>
+                      <div className="font-bold">{isEn ? 'Supabase Sync Failure' : 'Munganisho wa Wingu Umefeli'}</div>
+                      <p className="text-[10px] text-red-400/90 leading-tight">
+                        {isEn ? 'Admin could not fetch live users from Supabase. Ensure internet is active.' : 'Hakikisha mtandao unafanya kazi kuwasiliana na wingu.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Pending Payment Claims Alert */}
+                {pendingClaimsCount > 0 && (
+                  <div className="p-3 bg-amber-950/60 border border-amber-500/30 rounded-xl flex items-center gap-2.5 text-amber-300">
+                    <span className="text-xl">💳</span>
+                    <div>
+                      <div className="font-bold">{isEn ? 'Pending Subscriptions Claim' : 'Thibitisha Malipo ya M-Pesa'}</div>
+                      <p className="text-[10px] text-amber-400/90 leading-tight">
+                        {isEn ? `${pendingClaimsCount} shop owners have claimed payments. Verify their till transactions.` : `Kuna maduka ${pendingClaimsCount} yanayosubiri uidhinishe malipo.`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Pending Loans Alert */}
+                {pendingLoansCount > 0 && (
+                  <div className="p-3 bg-amber-950/60 border border-amber-500/30 rounded-xl flex items-center gap-2.5 text-amber-300">
+                    <span className="text-xl">💰</span>
+                    <div>
+                      <div className="font-bold">{isEn ? 'Pending Credit Requests' : 'Maombi Mapya ya Mikopo'}</div>
+                      <p className="text-[10px] text-amber-400/90 leading-tight">
+                        {isEn ? `${pendingLoansCount} credit applications are waiting for your approval.` : `Kuna maombi ${pendingLoansCount} yanayosubiri mapitio yako.`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Expired / Due Subscriptions Alert */}
+                {merchantShops.some(s => s.subscription_paid_until && new Date(s.subscription_paid_until).getTime() < Date.now()) && (
+                  <div className="p-3 bg-rose-950/60 border border-rose-500/30 rounded-xl flex items-center gap-2.5 text-rose-300">
+                    <span className="text-xl">⌛</span>
+                    <div>
+                      <div className="font-bold">{isEn ? 'Expired Shop Access Detected' : 'Maduka Yaliyopitisha Muda'}</div>
+                      <p className="text-[10px] text-rose-400/90 leading-tight">
+                        {isEn ? 'Some registered merchant shops have expired subscription terms. Access restricted.' : 'Kuna maduka yaliyoisha muda wa huduma. Angalia jedwali la Maduka.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* System OK message if no warnings */}
+                {dbSyncStatus === 'connected' && pendingClaimsCount === 0 && pendingLoansCount === 0 && !merchantShops.some(s => s.subscription_paid_until && new Date(s.subscription_paid_until).getTime() < Date.now()) && (
+                  <div className="p-3 bg-emerald-950/40 border border-emerald-500/20 rounded-xl col-span-2 flex items-center gap-2.5 text-emerald-400">
+                    <span className="text-emerald-400 text-sm">❇️</span>
+                    <div>
+                      <div className="font-bold">{isEn ? 'All Systems Fully Operational' : 'Mifumo Yote Iko Sawa'}</div>
+                      <p className="text-[10px] text-emerald-500/80">
+                        {isEn ? 'Zero errors detected. 100% of duka clients are synced, paid, and within limits.' : 'Hakuna matatizo yoyote. Maduka yote yamesawazishwa na yamelipia.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-1">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
@@ -446,8 +541,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase tracking-wider bg-slate-950/50">
                     <th className="py-2.5 px-3">Shop & Owner</th>
-                    <th className="py-2.5 px-3">Town / Location</th>
-                    <th className="py-2.5 px-3">Loan Status</th>
+                    <th className="py-2.5 px-3">Subscription Term</th>
+                    <th className="py-2.5 px-3">Adjust Access</th>
                     <th className="py-2.5 px-3">Credit Limit</th>
                     <th className="py-2.5 px-3">Grant Limit</th>
                   </tr>
@@ -494,13 +589,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               <span>🏪</span>
                               <span>{s.shop_name}</span>
                             </div>
-                            <div className="text-[10px] text-slate-400">{s.owner_name} · {s.phone || s.contact_email}</div>
+                            <div className="text-[10px] text-slate-400">{s.owner_name} · {s.town || 'Kenya'} · {s.phone || s.contact_email}</div>
                           </td>
-                          <td className="py-3 px-3 text-slate-300 font-medium">{s.town || 'Kenya'}</td>
                           <td className="py-3 px-3">
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                              {s.active_loan_status || 'Active'}
-                            </span>
+                            {(() => {
+                              const expDate = s.subscription_paid_until ? new Date(s.subscription_paid_until) : null;
+                              const isValid = expDate && !isNaN(expDate.getTime());
+                              const isExpired = !isValid || expDate.getTime() < Date.now();
+                              return (
+                                <div className="space-y-1">
+                                  <div className="text-xs font-bold font-mono text-slate-300">
+                                    {isValid ? expDate!.toLocaleDateString() : 'No Term'}
+                                  </div>
+                                  <div>
+                                    {isExpired ? (
+                                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                        Expired
+                                      </span>
+                                    ) : (
+                                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                        Active
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, 30)}
+                                className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/30 text-emerald-400 hover:text-white border border-emerald-500/20 hover:border-emerald-500/40 rounded-lg text-[10px] font-black transition cursor-pointer"
+                                title="Add 30 Days"
+                              >
+                                +30 Siku
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, -30)}
+                                className="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 hover:text-white border border-rose-500/20 hover:border-rose-500/40 rounded-lg text-[10px] font-black transition cursor-pointer"
+                                title="Reduce 30 Days"
+                              >
+                                -30 Siku
+                              </button>
+                            </div>
                           </td>
                           <td className="py-3 px-3 font-bold text-emerald-400 font-mono">
                             {formatKES(toKES(s.loan_limit || 0))}

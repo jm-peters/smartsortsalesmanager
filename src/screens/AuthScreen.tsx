@@ -127,6 +127,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [isSettingPin, setIsSettingPin] = useState(false);
   const [newDevicePin, setNewDevicePin] = useState('');
   const [tempUserForPin, setTempUserForPin] = useState<{ user: ShopUser; shop: Shop } | null>(null);
+  const [isRestoringData, setIsRestoringData] = useState(false);
+  const [restoreMessage, setRestoreMessage] = useState('');
 
   // Attendant Invite States
   const [isAttendantInvite, setIsAttendantInvite] = useState(false);
@@ -654,6 +656,24 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     const bioAlreadyEnabled = isBiometricEnabled();
     const promptSeen = hasAnsweredBiometricPrompt();
 
+    // Trigger explicit remote-pull restoration to guarantee zero empty-state screens
+    setIsRestoringData(true);
+    setRestoreMessage(language === 'en' ? 'Authenticating and initializing cloud link...' : 'Kuthibitisha na kuunganisha na wingu...');
+
+    try {
+      // Run the initial restoration sync pull to retrieve all existing products, sales, customers, debts, etc.
+      setRestoreMessage(language === 'en' ? 'Restoring your shop catalog & product list...' : 'Kurejesha orodha ya bidhaa zako...');
+      await syncEngine.triggerSync();
+      
+      setRestoreMessage(language === 'en' ? 'Rebuilding inventory stock levels...' : 'Kusawazisha hesabu ya bidhaa...');
+      // Wait a short moment to let database finalize
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } catch (syncErr) {
+      console.warn('Initial data restoration sync had a non-fatal skip:', syncErr);
+    } finally {
+      setIsRestoringData(false);
+    }
+
     if (!bioAlreadyEnabled && !promptSeen) {
       setTempUserForPin({ user: loggedInUser, shop: loggedInShop });
       setIsPromptingEnableBio(true);
@@ -666,7 +686,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       return;
     }
 
-    void syncEngine.triggerSync();
     onAuthenticated(loggedInUser, loggedInShop);
   };
 
@@ -1847,6 +1866,36 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             isPin={true}
             submitLabel={language === 'en' ? 'Save Fallback PIN & Open Shop' : 'Hifadhi PIN & Fungua Duka'}
           />
+        </div>
+      </div>
+    );
+  }
+
+  if (isRestoringData) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl text-center space-y-6">
+          <div className="relative w-20 h-20 mx-auto">
+            <div className="absolute inset-0 rounded-full border-4 border-slate-800" />
+            <div className="absolute inset-0 rounded-full border-4 border-t-emerald-500 animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center text-2xl">
+              🔄
+            </div>
+          </div>
+
+          <div className="space-y-2 animate-pulse">
+            <h2 className="text-lg font-black text-white uppercase tracking-tight">
+              {language === 'en' ? 'Restoring Shop Environment' : 'Kurejesha Data ya Duka'}
+            </h2>
+            <p className="text-xs text-slate-400 font-medium animate-bounce">
+              {restoreMessage}
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-slate-800 text-[10px] text-slate-500 font-semibold space-y-1">
+            <p>{language === 'en' ? 'Downloading catalog templates...' : 'Inapakua orodha ya bidhaa...'}</p>
+            <p>{language === 'en' ? 'Syncing credit balances & customer lists...' : 'Inasawazisha hesabu ya deni...'}</p>
+          </div>
         </div>
       </div>
     );

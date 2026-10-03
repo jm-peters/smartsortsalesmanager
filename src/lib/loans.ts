@@ -88,6 +88,9 @@ export interface MerchantShopSummary {
   active_loan_amount: number;
   active_loan_balance: number;
   created_at: string;
+  subscription_paid_until?: string;
+  plan_status?: string;
+  plan_code?: string;
 }
 
 const LOAN_APPS_STORAGE_KEY = 'smartsort_loan_applications_v1';
@@ -690,6 +693,9 @@ export async function syncLoansAndShopsWithCloud(currentShop?: ShopMeta | null):
       active_loan_amount: st?.active_loan_amount ?? shop.active_loan_amount ?? 0,
       active_loan_balance: st?.active_loan_balance ?? shop.active_loan_balance ?? 0,
       created_at: shop.created_at || new Date().toISOString(),
+      subscription_paid_until: shop.subscription_paid_until || undefined,
+      plan_status: shop.plan_status || undefined,
+      plan_code: shop.plan_code || undefined,
     });
   }
 
@@ -820,6 +826,9 @@ export async function syncLoansAndShopsWithCloud(currentShop?: ShopMeta | null):
             active_loan_amount: st?.active_loan_amount ?? existing?.active_loan_amount ?? 0,
             active_loan_balance: st?.active_loan_balance ?? existing?.active_loan_balance ?? 0,
             created_at: s.created_at || existing?.created_at || new Date().toISOString(),
+            subscription_paid_until: s.subscription_paid_until || existing?.subscription_paid_until,
+            plan_status: s.plan_status || existing?.plan_status,
+            plan_code: s.plan_code || existing?.plan_code,
           });
         }
       }
@@ -881,4 +890,43 @@ export async function syncLoansAndShopsWithCloud(currentShop?: ShopMeta | null):
     shops: Array.from(shopsMap.values()),
     updatedCurrentShop,
   };
+}
+
+export async function adminUpdateShopSubscription(
+  shopId: string,
+  subscriptionPaidUntil: string,
+  planStatus: string
+): Promise<void> {
+  const cfg = getSupabaseConfig();
+  if (cfg) {
+    try {
+      const resp = await fetch(`${cfg.url}/rest/v1/shops?id=eq.${encodeURIComponent(shopId)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: cfg.anonKey,
+          Authorization: `Bearer ${cfg.anonKey}`,
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({
+          subscription_paid_until: subscriptionPaidUntil,
+          plan_status: planStatus,
+        }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to patch subscription: ${resp.statusText}`);
+      }
+    } catch (err) {
+      console.warn('Could not update subscription on remote server, falling back to local state:', err);
+    }
+  }
+
+  // Update local Dexie meta if this is our own shop (self-admin preview)
+  const currentShop = await getShopMeta();
+  if (currentShop && currentShop.shop_id === shopId) {
+    await saveShopMeta({
+      subscription_paid_until: subscriptionPaidUntil,
+      plan_status: planStatus as any,
+    });
+  }
 }
