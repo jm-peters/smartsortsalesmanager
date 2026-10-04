@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { CreditCard, Zap, ShieldAlert, Check, X, Phone, ArrowRight } from 'lucide-react';
-import type { ShopMeta } from '../lib/db/local';
+import React, { useState } from 'react';
+import { CreditCard, Zap, ShieldAlert, Check, X, Phone } from 'lucide-react';
+import { saveShopMeta, type ShopMeta } from '../lib/db/local';
 import type { Language } from '../lib/i18n';
 
 interface SubscriptionPushBannerProps {
@@ -30,8 +30,9 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
   // Expired or expiring within 16 hours
   const isExpired = msRemaining <= 0;
   const isDueSoon = hoursRemaining <= 16;
+  const hasActiveAdminReminder = !!shop.subscription_reminder_active;
 
-  if (!isExpired && !isDueSoon) return null;
+  if (!isExpired && !isDueSoon && !hasActiveAdminReminder) return null;
 
   const registeredPhone = (shop.phone || shop.alt_phone || '').trim();
 
@@ -40,7 +41,7 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0 mt-0.5">
-            {isExpired ? (
+            {isExpired || hasActiveAdminReminder ? (
               <ShieldAlert className="w-5 h-5 text-amber-300" />
             ) : (
               <Zap className="w-5 h-5 text-emerald-300 animate-pulse" />
@@ -50,15 +51,21 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
           <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-xs font-black uppercase tracking-wider bg-emerald-800/80 px-2 py-0.5 rounded-md border border-emerald-500/40">
-                {isEn ? 'Daily Duka Access Due' : 'Ada ya Kila Siku Inahitajika'}
+                {hasActiveAdminReminder 
+                  ? (isEn ? 'System Notice' : 'Kikumbusho cha Malipo')
+                  : isEn ? 'Daily Duka Access Due' : 'Ada ya Kila Siku Inahitajika'}
               </span>
-              <span className="text-xs font-black text-amber-300">
-                KES 30 / day
-              </span>
+              {!hasActiveAdminReminder && (
+                <span className="text-xs font-black text-amber-300">
+                  KES 30 / day
+                </span>
+              )}
             </div>
 
             <p className="text-[11.5px] text-slate-200 leading-snug">
-              {isExpired
+              {hasActiveAdminReminder
+                ? (shop.admin_reminder_text || (isEn ? 'Subscription payment required.' : 'Malipo ya huduma yanahitajika.'))
+                : isExpired
                 ? (isEn
                     ? 'Your daily shop access is due. Pay to Paybill: 247247, Acc: 253499 with your registered number.'
                     : 'Ada ya duka ya leo inahitajika. Lipa kwa Paybill: 247247, Akaunti: 253499 kwa namba yako ya simu.')
@@ -67,7 +74,7 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
                     : `Ada ya duka inaisha baada ya saa ${Math.max(1, Math.round(hoursRemaining))}. Lipa KES 30 kwa Paybill: 247247, Akaunti: 253499.`)}
             </p>
 
-            {registeredPhone && (
+            {registeredPhone && !hasActiveAdminReminder && (
               <div className="text-[10px] text-emerald-300 font-medium flex items-center gap-1">
                 <Phone className="w-3 h-3" />
                 <span>{isEn ? 'Pay from registered phone: ' : 'Lipa kwa simu iliyosajiliwa: '}<strong>{registeredPhone}</strong></span>
@@ -78,7 +85,12 @@ export const SubscriptionPushBanner: React.FC<SubscriptionPushBannerProps> = ({
 
         <button
           type="button"
-          onClick={() => setDismissed(true)}
+          onClick={async () => {
+            setDismissed(true);
+            if (shop.subscription_reminder_active) {
+              await saveShopMeta({ subscription_reminder_active: false });
+            }
+          }}
           className="p-1 text-slate-400 hover:text-white rounded-lg transition shrink-0 cursor-pointer"
           title={isEn ? 'Dismiss' : 'Funga'}
         >

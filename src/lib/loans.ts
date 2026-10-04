@@ -895,11 +895,24 @@ export async function syncLoansAndShopsWithCloud(currentShop?: ShopMeta | null):
 export async function adminUpdateShopSubscription(
   shopId: string,
   subscriptionPaidUntil: string,
-  planStatus: string
+  planStatus: string,
+  reminderText?: string | null,
+  reminderActive?: boolean
 ): Promise<void> {
   const cfg = getSupabaseConfig();
   if (cfg) {
     try {
+      const payload: Record<string, any> = {
+        subscription_paid_until: subscriptionPaidUntil,
+        plan_status: planStatus,
+      };
+      if (reminderText !== undefined) {
+        payload.admin_reminder_text = reminderText;
+      }
+      if (reminderActive !== undefined) {
+        payload.subscription_reminder_active = reminderActive;
+      }
+
       const resp = await fetch(`${cfg.url}/rest/v1/shops?id=eq.${encodeURIComponent(shopId)}`, {
         method: 'PATCH',
         headers: {
@@ -908,10 +921,7 @@ export async function adminUpdateShopSubscription(
           Authorization: `Bearer ${cfg.anonKey}`,
           Prefer: 'return=minimal',
         },
-        body: JSON.stringify({
-          subscription_paid_until: subscriptionPaidUntil,
-          plan_status: planStatus,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!resp.ok) {
         throw new Error(`Failed to patch subscription: ${resp.statusText}`);
@@ -924,9 +934,16 @@ export async function adminUpdateShopSubscription(
   // Update local Dexie meta if this is our own shop (self-admin preview)
   const currentShop = await getShopMeta();
   if (currentShop && currentShop.shop_id === shopId) {
-    await saveShopMeta({
+    const updatePayload: Record<string, any> = {
       subscription_paid_until: subscriptionPaidUntil,
       plan_status: planStatus as any,
-    });
+    };
+    if (reminderText !== undefined) {
+      updatePayload.admin_reminder_text = reminderText;
+    }
+    if (reminderActive !== undefined) {
+      updatePayload.subscription_reminder_active = reminderActive;
+    }
+    await saveShopMeta(updatePayload);
   }
 }

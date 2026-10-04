@@ -60,6 +60,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [eligibleAlerts, setEligibleAlerts] = useState<EligibleShopAlert[]>(() => getAllEligibleShopAlerts());
   const [subscriptionClaims, setSubscriptionClaims] = useState<SubscriptionPaymentClaim[]>(() => getAllSubscriptionClaims());
   const [customLimitInputs, setCustomLimitInputs] = useState<Record<string, string>>({});
+  const [customDaysInputs, setCustomDaysInputs] = useState<Record<string, string>>({});
   const [isSyncing, setIsSyncing] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [totalUsers, setTotalUsers] = useState<number>(0);
@@ -167,6 +168,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setActionNotice(isEn 
       ? `✅ Adjusted subscription for shop by ${deltaDays > 0 ? '+' : ''}${deltaDays} days.` 
       : `✅ Imerekebisha muda wa duka kwa siku ${deltaDays > 0 ? '+' : ''}${deltaDays}.`
+    );
+    setTimeout(() => setActionNotice(null), 4000);
+    void refreshData();
+  };
+
+  const handleSendDueReminder = async (shopId: string, shopName: string, currentExpiryStr: string | undefined) => {
+    const baseDate = currentExpiryStr ? new Date(currentExpiryStr) : new Date();
+    const finalBase = isNaN(baseDate.getTime()) ? new Date() : baseDate;
+    const planStatus = finalBase.getTime() > Date.now() ? 'active' : 'expired';
+
+    const msg = isEn 
+      ? "Your SmartSort subscription is due soon or expired. Please process your payment to maintain uninterrupted offline sales & sync features." 
+      : "Muda wa duka lako la SmartSort unaisha hivi karibuni au umeisha. Tafadhali kamilisha malipo ili uendelee kuuza na kusawazisha data.";
+
+    await adminUpdateShopSubscription(shopId, finalBase.toISOString(), planStatus, msg, true);
+
+    setActionNotice(isEn 
+      ? `🔔 Sent subscription due reminder to ${shopName}!` 
+      : `🔔 Tuma kikumbusho cha malipo kwa duka la ${shopName}!`
     );
     setTimeout(() => setActionNotice(null), 4000);
     void refreshData();
@@ -617,23 +637,59 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             })()}
                           </td>
                           <td className="py-3 px-3">
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, 30)}
-                                className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/30 text-emerald-400 hover:text-white border border-emerald-500/20 hover:border-emerald-500/40 rounded-lg text-[10px] font-black transition cursor-pointer"
-                                title="Add 30 Days"
-                              >
-                                +30 Siku
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, -30)}
-                                className="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 hover:text-white border border-rose-500/20 hover:border-rose-500/40 rounded-lg text-[10px] font-black transition cursor-pointer"
-                                title="Reduce 30 Days"
-                              >
-                                -30 Siku
-                              </button>
+                            <div className="flex flex-col gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, 30)}
+                                  className="px-2 py-0.5 bg-emerald-500/10 hover:bg-emerald-500/30 text-emerald-400 hover:text-white border border-emerald-500/20 hover:border-emerald-500/40 rounded-lg text-[9px] font-black transition cursor-pointer"
+                                  title="Add 30 Days"
+                                >
+                                  +30 Siku
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, -30)}
+                                  className="px-2 py-0.5 bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 hover:text-white border border-rose-500/20 hover:border-rose-500/40 rounded-lg text-[9px] font-black transition cursor-pointer"
+                                  title="Reduce 30 Days"
+                                >
+                                  -30 Siku
+                                </button>
+                              </div>
+
+                              <div className="flex gap-1 items-center">
+                                <input
+                                  type="number"
+                                  placeholder="Siku (e.g. 7)"
+                                  value={customDaysInputs[s.shop_id] || ''}
+                                  onChange={(e) => setCustomDaysInputs({ ...customDaysInputs, [s.shop_id]: e.target.value })}
+                                  className="w-16 px-1.5 py-0.5 text-[10px] bg-slate-950 border border-slate-800 rounded-md text-white focus:outline-none focus:border-emerald-500 font-mono text-center"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const val = parseInt(customDaysInputs[s.shop_id] || '0', 10);
+                                    if (val) {
+                                      void handleUpdateSubscriptionDays(s.shop_id, s.subscription_paid_until, val);
+                                      setCustomDaysInputs({ ...customDaysInputs, [s.shop_id]: '' });
+                                    }
+                                  }}
+                                  className="px-1.5 py-0.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-black rounded-md text-[9px] uppercase transition cursor-pointer"
+                                >
+                                  Weka
+                                </button>
+                              </div>
+
+                              <div>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSendDueReminder(s.shop_id, s.shop_name, s.subscription_paid_until)}
+                                  className="w-full py-0.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-md text-[9px] uppercase transition flex items-center justify-center gap-1 cursor-pointer"
+                                  title="Send Payment Due Reminder To Duka"
+                                >
+                                  🔔 Tuma Kikumbusho
+                                </button>
+                              </div>
                             </div>
                           </td>
                           <td className="py-3 px-3 font-bold text-emerald-400 font-mono">

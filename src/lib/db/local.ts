@@ -451,6 +451,8 @@ export interface ShopMeta {
   manual_limit_set?: boolean;
   loyalty_enabled?: boolean;
   loyalty_points_per_100_kes?: number;
+  admin_reminder_text?: string | null;
+  subscription_reminder_active?: boolean;
 }
 
 export interface SubscriptionPaymentRecord {
