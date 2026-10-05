@@ -210,11 +210,11 @@ export const ProfileStepModal: React.FC<ProfileStepModalProps> = ({
         }
 
         const currentAttendants = await getStaffAttendants();
-        if (currentAttendants.length >= 2) {
+        if (currentAttendants.length >= 5) {
           setErrorMsg(
             language === 'en'
-              ? 'Maximum limit reached: A shop can have a maximum of 2 attendants.'
-              : 'Kiwango cha juu cha wahudumu 2 kimefikiwa kwa duka hili.'
+              ? 'Maximum limit reached: A shop can have a maximum of 5 attendants.'
+              : 'Kiwango cha juu cha wahudumu 5 kimefikiwa kwa duka hili.'
           );
           setSaving(false);
           return;

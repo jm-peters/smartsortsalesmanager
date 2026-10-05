@@ -167,33 +167,21 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
   const totalDeniAmount = useMemo(() => {
     return debts
       .filter((d) => {
-        if (!isOwner && loggedInUser) {
-          const assocSale = d.sale_id ? salesMap.get(d.sale_id) : null;
-          if (assocSale && assocSale.created_by !== loggedInUser.id) {
-            return false;
-          }
-        }
         return d.status !== 'paid' && d.status !== 'written_off';
       })
       .reduce((sum, d) => addKES(sum, subKES(d.principal, d.amount_paid)), toKES(0));
-  }, [debts, isOwner, loggedInUser, salesMap]);
+  }, [debts]);
 
   // Defaulted Debts (Product debts unrecovered for 2+ months / >= 60 days)
   const defaultedDebts = useMemo(() => {
     const now = Date.now();
     return debts.filter((d) => {
-      if (!isOwner && loggedInUser) {
-        const assocSale = d.sale_id ? salesMap.get(d.sale_id) : null;
-        if (assocSale && assocSale.created_by !== loggedInUser.id) {
-          return false;
-        }
-      }
       const balance = subKES(d.principal, d.amount_paid);
       const isOpen = balance > 0 && d.status !== 'paid' && d.status !== 'written_off';
       const days = Math.floor((now - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24));
       return isOpen && isDebtDefaulted(days, balance);
     });
-  }, [debts, isOwner, loggedInUser, salesMap]);
+  }, [debts]);
 
   const totalCompensationEligible = useMemo(() => {
     return defaultedDebts.reduce((sum, d) => {
@@ -208,12 +196,6 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     const groups = new Map<string, CustomerGroupedDebts>();
 
     debts.forEach((d) => {
-      if (!isOwner && loggedInUser) {
-        const assocSale = d.sale_id ? salesMap.get(d.sale_id) : null;
-        if (assocSale && assocSale.created_by !== loggedInUser.id) {
-          return;
-        }
-      }
       const key = d.customer_id || d.customer_name || 'unknown';
       const balance = subKES(d.principal, d.amount_paid);
       const days = Math.floor((now - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24));
@@ -283,18 +265,12 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     result.sort((a, b) => b.totalOutstanding - a.totalOutstanding);
 
     return result;
-  }, [debts, customerMap, filterStatus, searchQuery, isOwner, loggedInUser, salesMap]);
+  }, [debts, customerMap, filterStatus, searchQuery]);
 
   // Filtered single debts for individual view
   const filteredSingleDebts = useMemo(() => {
     const now = Date.now();
     return debts.filter((d) => {
-      if (!isOwner && loggedInUser) {
-        const assocSale = d.sale_id ? salesMap.get(d.sale_id) : null;
-        if (assocSale && assocSale.created_by !== loggedInUser.id) {
-          return false;
-        }
-      }
       const balance = subKES(d.principal, d.amount_paid);
       const isOpen = balance > 0 && d.status !== 'paid' && d.status !== 'written_off';
       const days = Math.floor((now - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24));
@@ -312,7 +288,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       }
       return true;
     });
-  }, [debts, filterStatus, searchQuery, isOwner, loggedInUser, salesMap]);
+  }, [debts, filterStatus, searchQuery]);
 
   const toggleCustomerExpand = (custId: string) => {
     setExpandedCustomerIds((prev) => {

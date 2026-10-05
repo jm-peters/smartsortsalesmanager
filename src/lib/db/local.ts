@@ -1330,6 +1330,19 @@ export async function recordSale(saleData: {
           qty: newQty,
           updated_at: now,
         });
+        outboxEntries.push({
+          id: sm.product_id,
+          table: 'product_stock',
+          op: 'update',
+          payload: {
+            product_id: sm.product_id,
+            shop_id: shop.shop_id,
+            qty: newQty,
+            updated_at: now,
+          },
+          attempts: 0,
+          next_attempt_at: now,
+        });
       }
 
       // 4. If Deni, write debt
@@ -1428,6 +1441,19 @@ export async function voidSale(saleId: string, reason = 'Customer mis-tap / 30s 
           table: 'stock_movements',
           op: 'insert',
           payload: revMovement as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        });
+        voidSyncEntries.push({
+          id: it.product_id,
+          table: 'product_stock',
+          op: 'update',
+          payload: {
+            product_id: it.product_id,
+            shop_id: shop.shop_id,
+            qty: newQty,
+            updated_at: now,
+          },
           attempts: 0,
           next_attempt_at: now,
         });
@@ -1775,6 +1801,19 @@ export async function recordBatchPurchase(
         attempts: 0,
         next_attempt_at: now,
       });
+      batchSyncEntries.push({
+        id: item.productId,
+        table: 'product_stock',
+        op: 'update',
+        payload: {
+          product_id: item.productId,
+          shop_id: shop.shop_id,
+          qty: newQty,
+          updated_at: now,
+        },
+        attempts: 0,
+        next_attempt_at: now,
+      });
     }
   });
 
@@ -1908,6 +1947,19 @@ export async function recordSingleProductRestock(payload: {
         attempts: 0,
         next_attempt_at: now,
       });
+      restockSyncEntries.push({
+        id: payload.productId,
+        table: 'product_stock',
+        op: 'update',
+        payload: {
+          product_id: payload.productId,
+          shop_id: shop.shop_id,
+          qty: newQty,
+          updated_at: now,
+        },
+        attempts: 0,
+        next_attempt_at: now,
+      });
     }
   );
 
@@ -1960,8 +2012,8 @@ export async function addStaffAttendant(
   attendant: Omit<StaffAttendant, 'id' | 'created_at'>
 ): Promise<StaffAttendant> {
   const list = await getStaffAttendants();
-  if (list.length >= 2) {
-    throw new Error('Maximum limit reached: A shop can have a maximum of 2 attendants.');
+  if (list.length >= 5) {
+    throw new Error('Maximum limit reached: A shop can have a maximum of 5 attendants.');
   }
 
   const shop = await getShopMeta();

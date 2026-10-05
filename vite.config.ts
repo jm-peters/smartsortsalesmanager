@@ -10,11 +10,20 @@ export default defineConfig(() => {
       {
         name: 'safe-vite-client-ws-send',
         transform(code, id) {
-          if (id.includes('vite/dist/client/client.mjs')) {
-            return code.replace(
-              'ws.send(JSON.stringify(data));',
-              'ws?.send?.(JSON.stringify(data));'
-            );
+          if (id.includes('vite/dist/client/') || id.includes('@vite/client')) {
+            return code
+              .replace(
+                'ws.send(JSON.stringify(data));',
+                'ws?.send?.(JSON.stringify(data));'
+              )
+              .replace(
+                /else\s+throw\s+new\s+SendBeforeConnectError\("send was called before connect"\);/g,
+                'else return;'
+              )
+              .replace(
+                /else\s+throw\s+new\s+SendBeforeConnectError\("invoke was called before connect"\);/g,
+                'else return;'
+              );
           }
         },
       },

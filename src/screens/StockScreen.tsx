@@ -420,6 +420,19 @@ export const StockScreen: React.FC<StockScreenProps> = ({
               attempts: 0,
               next_attempt_at: now,
             });
+            syncEntries.push({
+              id: productId,
+              table: 'product_stock',
+              op: 'update',
+              payload: {
+                product_id: productId,
+                shop_id: shop.shop_id,
+                qty: newStockQty,
+                updated_at: now,
+              },
+              attempts: 0,
+              next_attempt_at: now,
+            });
           }
         }
 
@@ -489,6 +502,19 @@ export const StockScreen: React.FC<StockScreenProps> = ({
             table: 'products',
             op: 'insert',
             payload: newProduct as unknown as Record<string, unknown>,
+            attempts: 0,
+            next_attempt_at: now,
+          });
+          syncEntries.push({
+            id: productId,
+            table: 'product_stock',
+            op: 'insert',
+            payload: {
+              product_id: productId,
+              shop_id: shop.shop_id,
+              qty: initialQty,
+              updated_at: now,
+            },
             attempts: 0,
             next_attempt_at: now,
           });
@@ -597,6 +623,19 @@ export const StockScreen: React.FC<StockScreenProps> = ({
           table: 'products',
           op: 'insert',
           payload: p as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        });
+        bulkSyncEntries.push({
+          id,
+          table: 'product_stock',
+          op: 'insert',
+          payload: {
+            product_id: id,
+            shop_id: shop.shop_id,
+            qty,
+            updated_at: now,
+          },
           attempts: 0,
           next_attempt_at: now,
         });
@@ -1474,14 +1513,29 @@ export const StockScreen: React.FC<StockScreenProps> = ({
                         updated_at: now,
                       });
 
-                      void syncWriteThrough({
-                        id: mId,
-                        table: 'stock_movements',
-                        op: 'insert',
-                        payload: movement as unknown as Record<string, unknown>,
-                        attempts: 0,
-                        next_attempt_at: now,
-                      });
+                      void syncWriteThrough([
+                        {
+                          id: mId,
+                          table: 'stock_movements',
+                          op: 'insert',
+                          payload: movement as unknown as Record<string, unknown>,
+                          attempts: 0,
+                          next_attempt_at: now,
+                        },
+                        {
+                          id: p.id,
+                          table: 'product_stock',
+                          op: 'update',
+                          payload: {
+                            product_id: p.id,
+                            shop_id: shop.shop_id,
+                            qty: counted,
+                            updated_at: now,
+                          },
+                          attempts: 0,
+                          next_attempt_at: now,
+                        },
+                      ]);
                     }}
                     className="w-16 h-9 px-2 text-center font-bold text-sm border border-slate-300 rounded-lg"
                   />

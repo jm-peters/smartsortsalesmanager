@@ -107,19 +107,35 @@ export default function App() {
       void syncEngine.handleDeviceOnline();
     };
 
+    const handleShopMetaUpdated = (e: Event) => {
+      const customEvent = e as CustomEvent<Shop>;
+      if (customEvent.detail) {
+        setShop(customEvent.detail);
+      }
+    };
+
     window.addEventListener('online', handleOnlineReconnect);
+    window.addEventListener('smartsort_shop_meta_updated', handleShopMetaUpdated);
 
     const syncInterval = window.setInterval(() => {
       if (typeof navigator !== 'undefined' && navigator.onLine) {
         void syncEngine.triggerSync();
       }
-    }, 15_000);
+    }, 3_000);
 
     return () => {
       window.removeEventListener('online', handleOnlineReconnect);
+      window.removeEventListener('smartsort_shop_meta_updated', handleShopMetaUpdated);
       window.clearInterval(syncInterval);
     };
   }, []);
+
+  // Trigger immediate background sync whenever the user switches tabs
+  useEffect(() => {
+    if (user && (typeof navigator === 'undefined' || navigator.onLine)) {
+      void syncEngine.triggerSync();
+    }
+  }, [currentTab, user]);
 
   // Update shop info
   const handleUpdateShop = (name: string, till: string) => {

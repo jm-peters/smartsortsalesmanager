@@ -1001,15 +1001,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </div>
                 ))}
 
-                {user.role === 'owner' && (
+                 {user.role === 'owner' && (
                   <>
-                    {staffList.length >= 2 ? (
+                    {staffList.length >= 5 ? (
                       <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 font-medium flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
                         <span>
                           {language === 'en'
-                            ? 'Maximum limit of 2 staff attendants reached for this shop.'
-                            : 'Kiwango cha juu cha wahudumu 2 kimefikiwa kwa duka hili.'}
+                            ? 'Maximum limit of 5 staff attendants reached for this shop.'
+                            : 'Kiwango cha juu cha wahudumu 5 kimefikiwa kwa duka hili.'}
                         </span>
                       </div>
                     ) : (
@@ -1019,7 +1019,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                         className="w-full mt-2 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 active:scale-98"
                       >
                         <Users className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>{t.addStaffBtn} ({staffList.length}/2)</span>
+                        <span>{t.addStaffBtn} ({staffList.length}/5)</span>
                       </button>
                     )}
                   </>

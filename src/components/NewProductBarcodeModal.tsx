@@ -6,7 +6,17 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, Barcode, Check, X, ShieldCheck } from 'lucide-react';
 import { Button } from './Button';
-import { db, getShopMeta, getShopUser, getOrCreateDeviceId, type Product, type StockMovement } from '../lib/db/local';
+import {
+  db,
+  getShopMeta,
+  getShopUser,
+  getOrCreateDeviceId,
+  serverNow,
+  syncWriteThrough,
+  type Product,
+  type StockMovement,
+  type OutboxEntry,
+} from '../lib/db/local';
 import { getRelevantEmoji, POPULAR_RETAIL_EMOJIS } from '../lib/emojiHelper';
 import { toKES, formatKES } from '../lib/money';
 import type { Language } from '../lib/i18n';
@@ -77,7 +87,7 @@ export const NewProductBarcodeModal: React.FC<NewProductBarcodeModalProps> = ({
     try {
       const shop = await getShopMeta();
       const user = await getShopUser();
-      const now = new Date().toISOString();
+      const now = serverNow();
       const productId = `prod-${crypto.randomUUID()}`;
       const searchKey = name.toLowerCase().replace(/[^a-z0-9]/g, '');
       const deviceId = await getOrCreateDeviceId();
@@ -103,26 +113,66 @@ export const NewProductBarcodeModal: React.FC<NewProductBarcodeModalProps> = ({
         device_id: deviceId,
       };
 
+      const syncEntries: OutboxEntry[] = [
+        {
+          id: productId,
+          table: 'products',
+          op: 'insert',
+          payload: newProduct as unknown as Record<string, unknown>,
+          attempts: 0,
+          next_attempt_at: now,
+        },
+      ];
+
       await db.products.put(newProduct);
 
-      // Record opening stock movement
-      if (openingStock > 0) {
-        const movement: StockMovement = {
-          id: crypto.randomUUID(),
-          shop_id: shop.shop_id,
+      // Record opening stock movement & cache
+      const movementId = crypto.randomUUID();
+      const movement: StockMovement = {
+        id: movementId,
+        shop_id: shop.shop_id,
+        product_id: productId,
+        delta: openingStock,
+        reason: 'opening',
+        ref_type: 'opening',
+        ref_id: null,
+        unit_cost: toKES(buyPrice),
+        note: 'Scanned new product barcode registration',
+        created_at: now,
+        device_id: deviceId,
+        created_by: user?.id || shop.user_id || 'user-admin',
+      };
+      await db.stock_movements.put(movement);
+      await db.product_stock.put({
+        product_id: productId,
+        shop_id: shop.shop_id,
+        qty: openingStock,
+        updated_at: now,
+      });
+
+      syncEntries.push({
+        id: movementId,
+        table: 'stock_movements',
+        op: 'insert',
+        payload: movement as unknown as Record<string, unknown>,
+        attempts: 0,
+        next_attempt_at: now,
+      });
+      syncEntries.push({
+        id: productId,
+        table: 'product_stock',
+        op: 'insert',
+        payload: {
           product_id: productId,
-          delta: openingStock,
-          reason: 'opening',
-          ref_type: 'opening',
-          ref_id: null,
-          unit_cost: toKES(buyPrice),
-          note: 'Scanned new product barcode registration',
-          created_at: now,
-          device_id: deviceId,
-          created_by: user?.id || shop.user_id || 'user-admin',
-        };
-        await db.stock_movements.put(movement);
-      }
+          shop_id: shop.shop_id,
+          qty: openingStock,
+          updated_at: now,
+        },
+        attempts: 0,
+        next_attempt_at: now,
+      });
+
+      void syncWriteThrough(syncEntries);
 
       onProductLearnedAndAdded(newProduct);
       onClose();

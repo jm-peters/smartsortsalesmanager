@@ -160,6 +160,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
 
       let attendantId = crypto.randomUUID();
+      let signupToken = '';
 
       let shopIdFromStorage = localStorage.getItem('smartsort_invited_shop_id') || '';
 
@@ -187,6 +188,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         if (resp.ok) {
           const data = await resp.json();
           attendantId = data.user?.id || attendantId;
+          signupToken = data.access_token || '';
         }
 
         // Try to resolve shop from staff_attendants remote table if not in storage
@@ -304,12 +306,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
       // Sync updated attendant to Supabase REST tables
       if (url && anonKey) {
+        const authHeader = signupToken ? `Bearer ${signupToken}` : `Bearer ${anonKey}`;
+
         fetch(`${url}/rest/v1/staff_attendants`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             apikey: anonKey,
-            Authorization: `Bearer ${anonKey}`,
+            Authorization: authHeader,
             Prefer: 'resolution=merge-duplicates',
           },
           body: JSON.stringify([{
@@ -329,7 +333,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           headers: {
             'Content-Type': 'application/json',
             apikey: anonKey,
-            Authorization: `Bearer ${anonKey}`,
+            Authorization: authHeader,
             Prefer: 'resolution=merge-duplicates',
           },
           body: JSON.stringify([{
@@ -978,15 +982,60 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               // Pull shop data from Supabase matching this user/shop
               let shop: Shop | null = null;
               try {
-                const targetShopId = attendantShopId || data.user?.user_metadata?.shop_id;
+                let targetShopId = attendantShopId || data.user?.user_metadata?.shop_id;
+                const cleanAuthEmail = (data.user?.email || targetEmail).toLowerCase().trim();
+
+                // If targetShopId is not yet known, check public.users and public.staff_attendants by email
+                if (!targetShopId && cleanAuthEmail) {
+                  try {
+                    const uRes = await fetch(
+                      `${url}/rest/v1/users?email=eq.${encodeURIComponent(cleanAuthEmail)}&select=shop_id,role`,
+                      {
+                        headers: {
+                          apikey: anonKey,
+                          Authorization: `Bearer ${data.access_token || anonKey}`,
+                        },
+                      }
+                    );
+                    if (uRes.ok) {
+                      const uRows = await uRes.json();
+                      if (uRows && uRows.length > 0 && uRows[0].shop_id) {
+                        targetShopId = uRows[0].shop_id;
+                        if (uRows[0].role === 'attendant') isAttendantUser = true;
+                      }
+                    }
+                  } catch {}
+
+                  if (!targetShopId) {
+                    try {
+                      const aRes = await fetch(
+                        `${url}/rest/v1/staff_attendants?email=eq.${encodeURIComponent(cleanAuthEmail)}&select=shop_id`,
+                        {
+                          headers: {
+                            apikey: anonKey,
+                            Authorization: `Bearer ${data.access_token || anonKey}`,
+                          },
+                        }
+                      );
+                      if (aRes.ok) {
+                        const aRows = await aRes.json();
+                        if (aRows && aRows.length > 0 && aRows[0].shop_id) {
+                          targetShopId = aRows[0].shop_id;
+                          isAttendantUser = true;
+                        }
+                      }
+                    } catch {}
+                  }
+                }
+
                 const shopQuery = targetShopId
                   ? `id=eq.${encodeURIComponent(targetShopId)}`
-                  : `contact_email=eq.${encodeURIComponent((data.user?.email || targetEmail).toLowerCase().trim())}`;
+                  : `contact_email=eq.${encodeURIComponent(cleanAuthEmail)}`;
 
                 const shopResp = await fetch(`${url}/rest/v1/shops?${shopQuery}&select=*`, {
                   headers: {
                     apikey: anonKey,
-                    Authorization: `Bearer ${anonKey}`,
+                    Authorization: `Bearer ${data.access_token || anonKey}`,
                   },
                 });
 
@@ -1054,6 +1103,35 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   localStorage.setItem('smartsort_admin_unlocked', 'true');
                 } else {
                   localStorage.removeItem('smartsort_admin_unlocked');
+                }
+              }
+
+              if (url && anonKey && data.access_token) {
+                // Self-heal and guarantee that a valid user profile exists in public.users linked to their shop_id so RLS resolves perfectly!
+                try {
+                  await fetch(`${url}/rest/v1/users`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      apikey: anonKey,
+                      Authorization: `Bearer ${data.access_token}`,
+                      Prefer: 'resolution=merge-duplicates',
+                    },
+                    body: JSON.stringify([{
+                      id: data.user?.id,
+                      auth_user_id: data.user?.id,
+                      shop_id: shop.shop_id,
+                      name: updatedUser.name,
+                      username: updatedUser.username,
+                      email: updatedUser.email,
+                      role,
+                      is_active: true,
+                      onboarding_step: 'complete',
+                      updated_at: serverNow(),
+                    }]),
+                  });
+                } catch (profErr) {
+                  console.warn('Silent user profile sync deferred:', profErr);
                 }
               }
 

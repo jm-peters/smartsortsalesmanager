@@ -496,26 +496,45 @@ DECLARE
     v_shop_name TEXT;
     v_owner_name TEXT;
     v_phone TEXT;
+    v_role TEXT;
 BEGIN
-    v_shop_name := COALESCE(NEW.raw_user_meta_data->>'shop_name', 'Duka Langu');
-    v_owner_name := COALESCE(NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1));
+    v_role := COALESCE(NEW.raw_user_meta_data->>'role', 'owner');
+    v_shop_id := NEW.raw_user_meta_data->>'shop_id';
+    v_owner_name := COALESCE(NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1));
     v_phone := COALESCE(NEW.raw_user_meta_data->>'phone', NEW.phone, '');
-    v_shop_id := 'shop-' || substr(encode(gen_random_bytes(6), 'hex'), 1, 8);
 
-    -- Create shop if user doesn't already belong to one
-    INSERT INTO public.shops (id, shop_name, owner_name, phone, contact_email)
-    VALUES (v_shop_id, v_shop_name, v_owner_name, v_phone, NEW.email)
-    ON CONFLICT (id) DO NOTHING;
+    IF v_role = 'attendant' AND v_shop_id IS NOT NULL THEN
+        -- Link Attendant to the existing shop
+        INSERT INTO public.users (
+            id, shop_id, auth_user_id, name, email, phone, role, is_active
+        ) VALUES (
+            NEW.id::TEXT, v_shop_id, NEW.id, v_owner_name, NEW.email, v_phone, 'attendant', TRUE
+        )
+        ON CONFLICT (id) DO UPDATE SET
+            auth_user_id = NEW.id,
+            shop_id = v_shop_id,
+            role = 'attendant',
+            email = EXCLUDED.email;
+    ELSE
+        -- Owner flow (create new shop)
+        IF v_shop_id IS NULL THEN
+            v_shop_id := 'shop-' || substr(encode(gen_random_bytes(6), 'hex'), 1, 8);
+        END IF;
+        v_shop_name := COALESCE(NEW.raw_user_meta_data->>'shop_name', 'Duka Langu');
 
-    -- Create user record linked to auth.users.id
-    INSERT INTO public.users (
-        id, shop_id, auth_user_id, name, email, phone, role, is_active
-    ) VALUES (
-        NEW.id::TEXT, v_shop_id, NEW.id, v_owner_name, NEW.email, v_phone, 'owner', TRUE
-    )
-    ON CONFLICT (id) DO UPDATE SET
-        auth_user_id = NEW.id,
-        email = EXCLUDED.email;
+        INSERT INTO public.shops (id, shop_name, owner_name, phone, contact_email)
+        VALUES (v_shop_id, v_shop_name, v_owner_name, v_phone, NEW.email)
+        ON CONFLICT (id) DO NOTHING;
+
+        INSERT INTO public.users (
+            id, shop_id, auth_user_id, name, email, phone, role, is_active
+        ) VALUES (
+            NEW.id::TEXT, v_shop_id, NEW.id, v_owner_name, NEW.email, v_phone, 'owner', TRUE
+        )
+        ON CONFLICT (id) DO UPDATE SET
+            auth_user_id = NEW.id,
+            email = EXCLUDED.email;
+    END IF;
 
     RETURN NEW;
 END;

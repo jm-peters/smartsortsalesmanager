@@ -19,12 +19,14 @@ import {
 } from '../db/local';
 import type { RemoteAdapter } from '../remote/types';
 import { defaultRemoteAdapter } from '../remote/supabase';
+import { supabase } from '../supabaseClient';
 
 // Explicit push dependency order to respect foreign key constraints
 const PUSH_ORDER = [
   'shops',
   'users',
   'products',
+  'product_stock',
   'customers',
   'cash_sessions',
   'sales',
@@ -55,6 +57,8 @@ class SyncEngine {
   private connectivityWatchTimer: any = null;
   private reconnectStabilizeTimer: any = null;
   private broadcastChannel: any = null;
+  private realtimeChannel: any = null;
+  private realtimeShopId: string | null = null;
   private listeners: SyncListener[] = [];
   private currentStatus: SyncStatus = {
     isSyncing: false,
@@ -221,13 +225,57 @@ class SyncEngine {
     this.startPeriodicSync();
     this.startConnectivityWatchInterval();
     this.startAutoHealingSweep();
+    void this.ensureRealtimeSubscription();
 
     // Trigger initial background sync on app load
     setTimeout(() => {
       if (typeof navigator !== 'undefined' && navigator.onLine) {
         void this.triggerSync();
       }
-    }, 1000);
+    }, 500);
+  }
+
+  /**
+   * Subscribes to Supabase Postgres Changes for instant (<200ms) push of products,
+   * stock, sales, and credit updates across Shop Owner and Attendant devices.
+   */
+  public async ensureRealtimeSubscription(): Promise<void> {
+    try {
+      const meta = await db.meta.get('shop_info');
+      const shopId = meta?.value?.shop_id;
+      if (!shopId || this.realtimeShopId === shopId) return;
+
+      const url =
+        (import.meta as any).env?.VITE_SUPABASE_URL ||
+        (import.meta as any).env?.SUPABASE_URL ||
+        '';
+      if (!url || url.includes('placeholder')) return;
+
+      if (this.realtimeChannel) {
+        supabase.removeChannel(this.realtimeChannel).catch(() => {});
+        this.realtimeChannel = null;
+      }
+
+      this.realtimeShopId = shopId;
+      this.realtimeChannel = supabase
+        .channel(`shop_realtime_${shopId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public' },
+          (payload: any) => {
+            const recordShopId =
+              payload?.new?.shop_id ||
+              payload?.old?.shop_id ||
+              (payload?.table === 'shops' ? payload?.new?.id : null);
+            if (!recordShopId || recordShopId === shopId) {
+              void this.triggerSync();
+            }
+          }
+        )
+        .subscribe();
+    } catch {
+      // Realtime optional fallback; polling continues every 2.5s
+    }
   }
 
   /**
@@ -288,16 +336,16 @@ class SyncEngine {
           void this.triggerSync();
         }
       }
-    }, 10_000);
+    }, 5_000);
   }
 
   private startPeriodicSync() {
     if (this.syncTimer) clearInterval(this.syncTimer);
 
-    let interval = 3500; // Fast 3.5s real-time background sync across sellers & devices
+    let interval = 2500; // Fast 2.5s real-time background sync across owner & attendants
     const conn = (navigator as any).connection;
     if (conn && (conn.saveData || conn.effectiveType === '2g')) {
-      interval = 30_000; // 30s interval on slow/data-saver connections
+      interval = 15_000; // 15s interval on slow/data-saver connections
     }
 
     this.syncTimer = setInterval(() => {
@@ -461,9 +509,80 @@ class SyncEngine {
    * Cleans and sanitizes payloads to eliminate schema/type mismatches
    */
   private sanitizePayload(table: string, raw: Record<string, unknown>): Record<string, unknown> {
+    const ALLOWED_COLUMNS: Record<string, Set<string>> = {
+      shops: new Set([
+        'id', 'shop_name', 'owner_name', 'phone', 'till_number', 'avatar_emoji',
+        'tagline', 'contact_email', 'alt_phone', 'county', 'sub_county', 'town',
+        'landmark', 'latitude', 'longitude', 'location_captured_at', 'default_credit_limit',
+        'receipt_footer', 'business_cutoff_hour', 'plan_code', 'plan_name',
+        'plan_amount_kes', 'plan_status', 'subscription_paid_until',
+        'preferred_payment_method', 'plan_acknowledged', 'created_at', 'updated_at',
+      ]),
+      users: new Set([
+        'id', 'shop_id', 'auth_user_id', 'name', 'username', 'email', 'phone',
+        'role', 'pin_hash', 'onboarding_step', 'profile_completed_at', 'is_active',
+        'created_at', 'updated_at',
+      ]),
+      products: new Set([
+        'id', 'shop_id', 'name', 'search_key', 'buying_price', 'selling_price',
+        'low_limit', 'unit', 'barcode', 'image_emoji', 'is_active', 'is_pinned',
+        'pin_order', 'pack_size', 'device_id', 'created_at', 'updated_at', 'deleted_at',
+      ]),
+      product_stock: new Set([
+        'product_id', 'shop_id', 'qty', 'updated_at',
+      ]),
+      stock_movements: new Set([
+        'id', 'shop_id', 'product_id', 'delta', 'reason', 'ref_type', 'ref_id',
+        'unit_cost', 'note', 'device_id', 'created_by', 'created_at', 'server_created_at',
+      ]),
+      cash_sessions: new Set([
+        'id', 'shop_id', 'shop_user_id', 'device_id', 'label', 'opened_at',
+        'opening_float', 'closed_at', 'closed_by', 'expected_cash', 'counted_cash',
+        'cash_variance', 'expected_mpesa', 'counted_mpesa', 'mpesa_variance',
+        'total_sales', 'total_profit', 'total_expenses', 'deni_issued',
+        'deni_collected', 'transaction_count', 'note', 'status', 'created_at',
+      ]),
+      customers: new Set([
+        'id', 'shop_id', 'name', 'phone', 'notes', 'credit_limit',
+        'credit_limit_set_by', 'credit_limit_set_at', 'credit_notes',
+        'created_at', 'updated_at', 'deleted_at',
+      ]),
+      sales: new Set([
+        'id', 'shop_id', 'sale_no', 'total', 'total_profit', 'item_count',
+        'payment_method', 'debt_id', 'status', 'voided_at', 'void_reason',
+        'voided_by', 'cash_session_id', 'device_id', 'created_by',
+        'created_at', 'server_created_at', 'updated_at',
+      ]),
+      sale_items: new Set([
+        'id', 'sale_id', 'shop_id', 'product_id', 'product_name', 'qty',
+        'unit_price', 'unit_cost', 'cost_unknown', 'line_total', 'line_profit',
+      ]),
+      debts: new Set([
+        'id', 'shop_id', 'customer_id', 'customer_name', 'customer_phone',
+        'principal', 'amount_paid', 'status', 'due_date', 'sale_id',
+        'override_reason', 'device_id', 'created_at', 'updated_at',
+      ]),
+      debt_payments: new Set([
+        'id', 'shop_id', 'debt_id', 'amount', 'method', 'cash_session_id',
+        'device_id', 'created_by', 'created_at', 'server_created_at',
+      ]),
+      expenses: new Set([
+        'id', 'shop_id', 'title', 'amount', 'category', 'payment_method',
+        'is_cash_drop', 'cash_session_id', 'recorded_by', 'created_by',
+        'device_id', 'created_at', 'updated_at', 'deleted_at',
+      ]),
+      subscription_payments: new Set([
+        'id', 'shop_id', 'days', 'amount_kes', 'payment_method', 'transaction_code',
+        'phone', 'paid_at', 'valid_until', 'checkout_request_id',
+        'merchant_request_id', 'status', 'created_at',
+      ]),
+    };
+
+    const allowed = ALLOWED_COLUMNS[table];
     const clean: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(raw)) {
       if (val === undefined) continue;
+      if (allowed && !allowed.has(key)) continue;
       // Convert Date objects to ISO strings
       if (val instanceof Date) {
         clean[key] = val.toISOString();
@@ -698,6 +817,7 @@ class SyncEngine {
     const meta = await db.meta.get('shop_info');
     if (!meta?.value?.shop_id) return;
     const shopId = meta.value.shop_id;
+    void this.ensureRealtimeSubscription();
 
     for (const table of PUSH_ORDER) {
       const syncState = await db.sync_state.get(table);
@@ -713,20 +833,58 @@ class SyncEngine {
           const shopRow = pullResult.rows[0] as Record<string, any>;
           if (shopRow) {
             const currentMeta = await db.meta.get('shop_info');
+            const mergedShop = {
+              ...currentMeta?.value,
+              ...shopRow,
+              shop_id: shopRow.id || shopId,
+            };
             await db.meta.put({
               key: 'shop_info',
-              value: {
-                ...currentMeta?.value,
-                ...shopRow,
-                shop_id: shopRow.id || shopId,
-              },
+              value: mergedShop,
             });
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('smartsort_shop_meta_updated', { detail: mergedShop }));
+            }
           }
         } else {
+          // Normalize pulled rows for local Dexie compatibility (e.g. deleted_at: null, numeric fields)
+          const normalizedRows = pullResult.rows.map((r: any) => {
+            const row = { ...r };
+            if ('deleted_at' in row || table === 'products' || table === 'customers' || table === 'expenses') {
+              row.deleted_at = row.deleted_at ?? null;
+            }
+            if (table === 'products') {
+              row.is_active = row.is_active ?? true;
+              row.selling_price = Number(row.selling_price || 0);
+              row.buying_price = row.buying_price != null ? Number(row.buying_price) : null;
+              row.low_limit = Number(row.low_limit ?? 5);
+            } else if (table === 'product_stock') {
+              row.qty = Number(row.qty || 0);
+            } else if (table === 'stock_movements') {
+              row.delta = Number(row.delta || 0);
+            } else if (table === 'sales') {
+              row.total = Number(row.total || 0);
+              row.total_profit = Number(row.total_profit || 0);
+              row.item_count = Number(row.item_count || 1);
+            } else if (table === 'sale_items') {
+              row.qty = Number(row.qty || 0);
+              row.unit_price = Number(row.unit_price || 0);
+              row.unit_cost = Number(row.unit_cost || 0);
+              row.line_total = Number(row.line_total || 0);
+              row.line_profit = Number(row.line_profit || 0);
+            } else if (table === 'debts') {
+              row.principal = Number(row.principal || 0);
+              row.amount_paid = Number(row.amount_paid || 0);
+            } else if (table === 'debt_payments' || table === 'expenses') {
+              row.amount = Number(row.amount || 0);
+            }
+            return row;
+          });
+
           // Idempotent upsert into local table
           const targetTable = (db as any)[table];
           if (targetTable) {
-            await targetTable.bulkPut(pullResult.rows);
+            await targetTable.bulkPut(normalizedRows);
           }
         }
       }
