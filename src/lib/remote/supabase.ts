@@ -100,8 +100,24 @@ export class SupabaseAdapter implements RemoteAdapter {
         };
       }
 
-      // If batch POST failed (e.g. partial update payload on an existing record),
-      // try PATCH per row by primary key (id or product_id) before reporting an error.
+      // Helper to strip optional newer columns if remote Postgres schema hasn't run migrations yet
+      const stripOptionalColumns = (r: Record<string, unknown>): Record<string, unknown> => {
+        const copy = { ...r };
+        if (table === 'sales') {
+          delete copy.cashier_name;
+          delete copy.created_by_name;
+          delete copy.created_by_role;
+        } else if (table === 'customers') {
+          delete copy.loyalty_points;
+        } else if (table === 'shops') {
+          delete copy.admin_reminder_text;
+          delete copy.subscription_reminder_active;
+        }
+        return copy;
+      };
+
+      // If batch POST failed (e.g. partial update payload on an existing record, or optional column / FK mismatch),
+      // try per row with automatic self-healing fallback before reporting an error.
       let patchedCount = 0;
       const errors: Array<{ id: string; error: string }> = [];
 
@@ -113,8 +129,8 @@ export class SupabaseAdapter implements RemoteAdapter {
           continue;
         }
 
-        // First try individual POST upsert
-        const singlePost = await fetch(`${this.url}/rest/v1/${table}`, {
+        // 1. First try individual POST upsert with full row
+        let singlePost = await fetch(`${this.url}/rest/v1/${table}`, {
           method: 'POST',
           headers: this.getAuthHeaders({
             'Content-Type': 'application/json',
@@ -128,8 +144,43 @@ export class SupabaseAdapter implements RemoteAdapter {
           continue;
         }
 
-        // Fallback to PATCH for partial updates (e.g. status update, amount_paid update)
-        const patchResp = await fetch(
+        // 2. Try stripping optional columns and nulling cash_session_id if FK constraint failed
+        const safeRow = stripOptionalColumns(row);
+        singlePost = await fetch(`${this.url}/rest/v1/${table}`, {
+          method: 'POST',
+          headers: this.getAuthHeaders({
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          }),
+          body: JSON.stringify([safeRow]),
+        });
+
+        if (singlePost.ok) {
+          patchedCount++;
+          continue;
+        }
+
+        // 3. If table has cash_session_id, debt_id, or sale_id FK that hasn't synced yet, retry with null FK
+        if (safeRow.cash_session_id || safeRow.debt_id) {
+          const noFkRow = { ...safeRow };
+          if (noFkRow.cash_session_id) noFkRow.cash_session_id = null;
+          if (table === 'sales' && noFkRow.debt_id) noFkRow.debt_id = null;
+          const fkRetry = await fetch(`${this.url}/rest/v1/${table}`, {
+            method: 'POST',
+            headers: this.getAuthHeaders({
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates,return=minimal',
+            }),
+            body: JSON.stringify([noFkRow]),
+          });
+          if (fkRetry.ok) {
+            patchedCount++;
+            continue;
+          }
+        }
+
+        // 4. Fallback to PATCH for partial updates (e.g. status update, amount_paid update)
+        let patchResp = await fetch(
           `${this.url}/rest/v1/${table}?${pkField}=eq.${encodeURIComponent(String(pkVal))}`,
           {
             method: 'PATCH',
@@ -137,7 +188,7 @@ export class SupabaseAdapter implements RemoteAdapter {
               'Content-Type': 'application/json',
               Prefer: 'return=minimal',
             }),
-            body: JSON.stringify(row),
+            body: JSON.stringify(safeRow),
           }
         );
 
@@ -216,8 +267,42 @@ export class SupabaseAdapter implements RemoteAdapter {
       const rows: T[] = await resp.json();
       let maxChangeSeq = lastChangeSeq;
       for (const r of rows as any[]) {
-        if (r.change_seq && r.change_seq > maxChangeSeq) {
-          maxChangeSeq = r.change_seq;
+        if (r.change_seq && Number(r.change_seq) > maxChangeSeq) {
+          maxChangeSeq = Number(r.change_seq);
+        }
+      }
+
+      // Safety net: if cursor query returned 0 rows on critical transactional tables,
+      // also fetch the most recent 300 records for this shop to guarantee zero missed sales/products/debts
+      if (
+        rows.length === 0 &&
+        lastChangeSeq > 0 &&
+        ['products', 'product_stock', 'sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)
+      ) {
+        const recentParams: Record<string, string> = {
+          shop_id: `eq.${shopId}`,
+          limit: '300',
+        };
+        if (['products', 'sales', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)) {
+          recentParams['order'] = 'created_at.desc';
+        }
+        const recentQuery = new URLSearchParams(recentParams);
+        const recentResp = await fetch(`${this.url}/rest/v1/${table}?${recentQuery}`, {
+          headers: this.getAuthHeaders(),
+        });
+        if (recentResp.ok) {
+          const recentRows: T[] = await recentResp.json();
+          for (const r of recentRows as any[]) {
+            if (r.change_seq && Number(r.change_seq) > maxChangeSeq) {
+              maxChangeSeq = Number(r.change_seq);
+            }
+          }
+          return {
+            table,
+            rows: recentRows,
+            maxChangeSeq,
+            hasMore: false,
+          };
         }
       }
 

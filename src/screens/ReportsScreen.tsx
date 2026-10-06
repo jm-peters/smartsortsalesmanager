@@ -36,7 +36,10 @@ import {
   saveShopMeta,
   voidSale,
   getShopUser,
+  getStaffAttendants,
+  resolveSaleCashierDisplay,
 } from '../lib/db/local';
+import { syncEngine } from '../lib/sync/engine';
 import {
   toKES,
   formatKES,
@@ -106,6 +109,37 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
 
   const shopMeta = useLiveQuery(() => getShopMeta(), []);
   const loggedInUser = useLiveQuery(() => getShopUser(), []);
+  const allUsers = useLiveQuery(() => db.users.toArray(), []) || [];
+  const staffAttendants = useLiveQuery(() => getStaffAttendants(), []) || [];
+
+  // Trigger an immediate sync pass when ReportsScreen opens so the Owner always sees 100% up-to-date sales from all attendants
+  useEffect(() => {
+    void syncEngine.triggerSync();
+  }, [activeTab, datePeriod]);
+
+  // Build lookup map of user ID -> { name, role } across users table, staff_attendants, and active user
+  const usersMap = useMemo(() => {
+    const map = new Map<string, { name: string; role?: string }>();
+    for (const u of allUsers) {
+      if (u.id && u.name) {
+        map.set(u.id, { name: u.name, role: u.role });
+      }
+    }
+    for (const att of staffAttendants) {
+      if (att.id && att.name) {
+        map.set(att.id, { name: att.name, role: 'attendant' });
+      }
+    }
+    if (loggedInUser?.id && loggedInUser?.name) {
+      map.set(loggedInUser.id, { name: loggedInUser.name, role: loggedInUser.role });
+    }
+    if (shopMeta?.user_id && shopMeta?.owner_name) {
+      if (!map.has(shopMeta.user_id)) {
+        map.set(shopMeta.user_id, { name: shopMeta.owner_name, role: 'owner' });
+      }
+    }
+    return map;
+  }, [allUsers, staffAttendants, loggedInUser, shopMeta]);
 
   // Update credit in gross sales setting when shopMeta loads
   useEffect(() => {
@@ -242,13 +276,55 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       const saleNoMatch = saleNoStr.includes(q) || `#${saleNoStr}`.includes(q);
       const cust = s.debt_id ? debtMap.get(s.debt_id) : debtMap.get(s.id);
       const custMatch = Boolean(cust && cust.name.toLowerCase().includes(q));
+      const cashierInfo = resolveSaleCashierDisplay(s, usersMap, shopMeta, isEn);
+      const cashierMatch =
+        cashierInfo.name.toLowerCase().includes(q) ||
+        cashierInfo.roleLabel.toLowerCase().includes(q);
       
       const items = itemsBySaleId.get(s.id) || [];
       const itemMatch = items.some((it) => it.product_name.toLowerCase().includes(q));
 
-      return saleNoMatch || custMatch || itemMatch;
+      return saleNoMatch || custMatch || cashierMatch || itemMatch;
     });
-  }, [filteredSalesInWindow, searchQuery, debtMap, itemsBySaleId]);
+  }, [filteredSalesInWindow, searchQuery, debtMap, itemsBySaleId, usersMap, shopMeta, isEn]);
+
+  // Breakdown of Sales by Person (Owner & Attendants)
+  const salesByPerson = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        name: string;
+        roleLabel: string;
+        isAttendant: boolean;
+        count: number;
+        totalSales: number;
+        totalProfit: number;
+      }
+    >();
+
+    for (const s of filteredSalesInWindow) {
+      const info = resolveSaleCashierDisplay(s, usersMap, shopMeta, isEn);
+      const key = `${info.name.toLowerCase()}_${info.isAttendant ? 'attendant' : 'owner'}`;
+      const existing = map.get(key) || {
+        key,
+        name: info.name,
+        roleLabel: info.roleLabel,
+        isAttendant: info.isAttendant,
+        count: 0,
+        totalSales: 0,
+        totalProfit: 0,
+      };
+      existing.count += 1;
+      if (includeCreditInGrossSales || s.payment_method !== 'deni') {
+        existing.totalSales = addKES(existing.totalSales, s.total);
+        existing.totalProfit = addKES(existing.totalProfit, s.total_profit);
+      }
+      map.set(key, existing);
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.totalSales - a.totalSales);
+  }, [filteredSalesInWindow, usersMap, shopMeta, isEn, includeCreditInGrossSales]);
 
   // Filtered Expenses within Window
   const filteredExpenses = useMemo(() => {
@@ -473,16 +549,19 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   // Export CSV
   const handleExportCSV = () => {
     const headers = isEn
-      ? ['Sale Number', 'Date', 'Payment Method', 'Customer', 'Total (KES)', 'Profit (KES)']
-      : ['Nambari ya Mauzo', 'Tarehe', 'Njia ya Malipo', 'Mteja', 'Jumla (KES)', 'Faida (KES)'];
+      ? ['Sale Number', 'Date', 'Sold By', 'Role', 'Payment Method', 'Customer', 'Total (KES)', 'Profit (KES)']
+      : ['Nambari ya Mauzo', 'Tarehe', 'Aliyeuza', 'Cheo', 'Njia ya Malipo', 'Mteja', 'Jumla (KES)', 'Faida (KES)'];
 
     const rows = [
       headers,
       ...filteredSalesInWindow.map((s) => {
         const cust = s.debt_id ? debtMap.get(s.debt_id) : debtMap.get(s.id);
+        const cashierInfo = resolveSaleCashierDisplay(s, usersMap, shopMeta, isEn);
         return [
           s.sale_no,
           new Date(s.created_at).toLocaleString('en-KE'),
+          cashierInfo.name,
+          cashierInfo.roleLabel,
           s.payment_method,
           cust?.name || '-',
           s.total,
@@ -795,6 +874,65 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
               </div>
             </div>
 
+            {/* Sales by Person (Owner & Attendants Breakdown) */}
+            <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700">
+                  {isEn ? 'Sales by Person (Owner & Attendants)' : 'Mauzo kwa Kila Mtu (Mwenye Duka & Wahudumu)'}
+                </span>
+                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                  {isOwner
+                    ? isEn
+                      ? 'All Shop Sales'
+                      : 'Mauzo Yote ya Duka'
+                    : isEn
+                    ? 'Your Sales'
+                    : 'Mauzo Yako'}
+                </span>
+              </div>
+
+              {salesByPerson.length === 0 ? (
+                <div className="py-3 text-center text-xs text-slate-400">
+                  {isEn ? 'No sales recorded in this period.' : 'Hakuna mauzo katika kipindi hiki.'}
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 text-xs">
+                  {salesByPerson.map((person) => (
+                    <div key={person.key} className="py-2.5 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
+                            person.isAttendant
+                              ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                              : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                          }`}
+                        >
+                          {person.roleLabel}
+                        </span>
+                        <div>
+                          <div className="font-black text-slate-900">{person.name}</div>
+                          <div className="text-[10px] text-slate-500">
+                            {person.count} {person.count === 1 ? (isEn ? 'sale' : 'mauzo') : (isEn ? 'sales' : 'mauzo')}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="font-black text-slate-900 tabular-nums">
+                          {formatKES(person.totalSales)}
+                        </div>
+                        {isOwner && (
+                          <div className="text-[10px] font-bold text-emerald-700 tabular-nums">
+                            +{formatKES(person.totalProfit)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Most Sold Product Champion Highlight */}
             {stockMovementAnalysis.mostSoldProduct && (
               <div className="p-4 bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border-2 border-emerald-300 rounded-2xl shadow-xs space-y-2">
@@ -1061,6 +1199,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                   const items = itemsBySaleId.get(sale.id) || [];
                   const cust = sale.debt_id ? debtMap.get(sale.debt_id) : debtMap.get(sale.id);
                   const isVoided = sale.status === 'void';
+                  const cashierInfo = resolveSaleCashierDisplay(sale, usersMap, shopMeta, isEn);
 
                   return (
                     <div key={sale.id} className="p-3.5 space-y-2 hover:bg-slate-50/70 transition">
@@ -1098,15 +1237,20 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                               })}
                             </span>
                             <span className="text-slate-300">•</span>
-                            <span className="font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
-                              🏷️ {isEn ? 'Served by:' : 'Mhudumu:'}{' '}
-                              <strong>
-                                {sale.cashier_name || sale.created_by_name || (sale.created_by_role === 'attendant' ? (isEn ? 'Attendant' : 'Mhudumu') : (isEn ? 'Owner' : 'Mwenyewe'))}
-                              </strong>
+                            <span
+                              className={`font-semibold px-1.5 py-0.5 rounded text-[11px] border ${
+                                cashierInfo.isAttendant
+                                  ? 'bg-blue-50 text-blue-900 border-blue-200'
+                                  : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                              }`}
+                            >
+                              👤 {isEn ? 'Sold by:' : 'Aliyeuza:'}{' '}
+                              <strong>{cashierInfo.name}</strong>{' '}
+                              <span className="opacity-75">({cashierInfo.roleLabel})</span>
                             </span>
                             {cust && (
                               <span className="font-bold text-slate-700">
-                                • 👤 {cust.name}
+                                • 🛍️ {cust.name}
                               </span>
                             )}
                           </div>

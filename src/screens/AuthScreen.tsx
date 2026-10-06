@@ -1082,10 +1082,37 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
               const role = isAttendantUser || data.user?.user_metadata?.role === 'attendant' ? 'attendant' : 'owner';
 
+              let resolvedStaffName = (data.user?.user_metadata?.full_name || '').trim();
+              if (!resolvedStaffName && url && anonKey && cleanAuthEmail) {
+                try {
+                  const attNameRes = await fetch(
+                    `${url}/rest/v1/staff_attendants?email=eq.${encodeURIComponent(cleanAuthEmail)}&select=name`,
+                    {
+                      headers: {
+                        apikey: anonKey,
+                        Authorization: `Bearer ${data.access_token || anonKey}`,
+                      },
+                    }
+                  );
+                  if (attNameRes.ok) {
+                    const attRows = await attNameRes.json();
+                    if (attRows && attRows.length > 0 && attRows[0].name) {
+                      resolvedStaffName = attRows[0].name.trim();
+                    }
+                  }
+                } catch {}
+              }
+              if (!resolvedStaffName && role === 'owner' && shop.owner_name && shop.owner_name !== 'Smartsort User') {
+                resolvedStaffName = shop.owner_name;
+              }
+              if (!resolvedStaffName) {
+                resolvedStaffName = idInput.split('@')[0];
+              }
+
               const updatedUser: ShopUser = {
                 id: data.user?.id || crypto.randomUUID(),
                 shop_id: shop.shop_id,
-                name: data.user?.user_metadata?.full_name || idInput.split('@')[0],
+                name: resolvedStaffName,
                 username: data.user?.user_metadata?.username || idInput.split('@')[0],
                 email: data.user?.email || targetEmail,
                 phone: data.user?.user_metadata?.phone || '',

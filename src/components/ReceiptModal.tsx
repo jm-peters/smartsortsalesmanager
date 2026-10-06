@@ -8,7 +8,16 @@ import {
   shareReceipt,
   type ReceiptSummaryOptions,
 } from '../lib/receipt';
-import type { SaleHeader, SaleItem } from '../lib/db/local';
+import { useLiveQuery } from 'dexie-react-hooks';
+import {
+  db,
+  getShopMeta,
+  getShopUser,
+  getStaffAttendants,
+  resolveSaleCashierDisplay,
+  type SaleHeader,
+  type SaleItem,
+} from '../lib/db/local';
 import type { KES } from '../lib/money';
 import { translations, type Language } from '../lib/i18n';
 
@@ -44,7 +53,28 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   const [copied, setCopied] = useState(false);
   const t = translations[language];
 
+  const shopMeta = useLiveQuery(() => getShopMeta(), []);
+  const loggedInUser = useLiveQuery(() => getShopUser(), []);
+  const allUsers = useLiveQuery(() => db.users.toArray(), []) || [];
+  const staffAttendants = useLiveQuery(() => getStaffAttendants(), []) || [];
+
   if (!sale) return null;
+
+  const usersMap = new Map<string, { name: string; role?: string }>();
+  for (const u of allUsers) {
+    if (u.id && u.name) usersMap.set(u.id, { name: u.name, role: u.role });
+  }
+  for (const att of staffAttendants) {
+    if (att.id && att.name) usersMap.set(att.id, { name: att.name, role: 'attendant' });
+  }
+  if (loggedInUser?.id && loggedInUser?.name) {
+    usersMap.set(loggedInUser.id, { name: loggedInUser.name, role: loggedInUser.role });
+  }
+  if (shopMeta?.user_id && shopMeta?.owner_name && !usersMap.has(shopMeta.user_id)) {
+    usersMap.set(shopMeta.user_id, { name: shopMeta.owner_name, role: 'owner' });
+  }
+
+  const cashierInfo = resolveSaleCashierDisplay(sale, usersMap, shopMeta, language === 'en');
 
   const summaryOptions: ReceiptSummaryOptions = {
     shopName,
@@ -60,7 +90,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     paymentMethod: sale.payment_method,
     customerName,
     customerPhone,
-    cashierName: sale.cashier_name || sale.created_by_name || undefined,
+    cashierName: `${cashierInfo.name} (${cashierInfo.roleLabel})`,
     tillNumber,
     receiptFooter,
     language,

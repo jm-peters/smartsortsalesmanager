@@ -274,6 +274,7 @@ export interface AuditLog {
 }
 
 export class SmartSortDB extends Dexie {
+  users!: Table<ShopUser, string>;
   products!: Table<Product, string>;
   stock_movements!: Table<StockMovement, string>;
   product_stock!: Table<ProductStock, string>;
@@ -313,6 +314,26 @@ export class SmartSortDB extends Dexie {
     });
 
     this.version(2).stores({
+      products: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+updated_at], search_key, is_pinned',
+      stock_movements: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+product_id], ref_id',
+      product_stock: 'product_id, shop_id, [shop_id+product_id]',
+      sales: 'id, shop_id, created_at, [shop_id+created_at], sale_no, status, cash_session_id',
+      sale_items: 'id, sale_id, product_id, shop_id',
+      customers: 'id, shop_id, created_at, [shop_id+created_at], phone',
+      debts: 'id, shop_id, created_at, [shop_id+created_at], customer_id, status',
+      debt_payments: 'id, shop_id, debt_id, created_at, [shop_id+created_at], cash_session_id',
+      expenses: 'id, shop_id, created_at, [shop_id+created_at], category, cash_session_id',
+      cash_sessions: 'id, shop_id, opened_at, [shop_id+opened_at], status',
+      held_carts: 'id, shop_id, created_at',
+      product_stats: 'product_id, shop_id, score',
+      outbox: '++seq, id, table, next_attempt_at, attempts',
+      sync_state: 'table',
+      meta: 'key',
+      audit_log: 'id, shop_id, created_at, [shop_id+created_at], entity_id',
+    });
+
+    this.version(3).stores({
+      users: 'id, shop_id, email, phone, role',
       products: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+updated_at], search_key, is_pinned',
       stock_movements: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+product_id], ref_id',
       product_stock: 'product_id, shop_id, [shop_id+product_id]',
@@ -1244,9 +1265,33 @@ export async function recordSale(saleData: {
   }
 
   const activeUser = await getShopUser();
-  const cashierName = activeUser?.name || activeUser?.username || shop.owner_name || 'Cashier';
-  const creatorRole = activeUser?.role || 'owner';
-  const creatorId = activeUser?.id || shop.user_id;
+  const staffAttendants = await getStaffAttendants();
+  let creatorRole: UserRole = activeUser?.role || shop.role || 'owner';
+  let creatorId = activeUser?.id || shop.user_id;
+
+  // Match against staff attendants if logged in as attendant
+  const matchedAtt = staffAttendants.find(
+    (a) =>
+      a.id === creatorId ||
+      (activeUser?.email && a.email?.toLowerCase() === activeUser.email.toLowerCase()) ||
+      (activeUser?.phone && a.phone.toLowerCase() === activeUser.phone.toLowerCase())
+  );
+  if (matchedAtt) {
+    creatorRole = 'attendant';
+  }
+
+  const rawCashierName =
+    (matchedAtt?.name || activeUser?.name || '').trim();
+  const isGenericDefaultName =
+    !rawCashierName ||
+    rawCashierName.toLowerCase() === 'smartsort user' ||
+    rawCashierName.toLowerCase() === 'cashier';
+
+  const cashierName = isGenericDefaultName
+    ? creatorRole === 'owner'
+      ? (shop.owner_name && shop.owner_name !== 'Smartsort User' ? shop.owner_name : activeUser?.username || 'Shop Owner')
+      : (matchedAtt?.name || activeUser?.username || 'Attendant')
+    : rawCashierName;
 
   const saleHeader: SaleHeader = {
     id: saleId,
@@ -2027,6 +2072,37 @@ export async function addStaffAttendant(
   const updatedList = [...list, created];
   await db.meta.put({ key: 'staff_attendants', value: updatedList });
 
+  // Also store in local db.users and sync to remote users table so all devices resolve attendant name by ID
+  const now = created.created_at;
+  const attendantUserRecord: ShopUser = {
+    id: created.id,
+    shop_id: shop.shop_id,
+    name: created.name,
+    username: (created.email || created.phone || created.name).split('@')[0].toLowerCase().replace(/[^a-z0-9_.]/g, ''),
+    email: created.email || created.phone,
+    phone: created.phone,
+    role: 'attendant',
+    pin_hash: created.pin_hash,
+    onboarding_step: 'complete',
+    profile_completed_at: now,
+    is_active: true,
+    created_at: now,
+    updated_at: now,
+  };
+  try {
+    await db.users.put(attendantUserRecord);
+    void syncWriteThrough({
+      id: created.id,
+      table: 'users',
+      op: 'insert',
+      payload: attendantUserRecord as unknown as Record<string, unknown>,
+      attempts: 0,
+      next_attempt_at: now,
+    });
+  } catch {
+    // ignore
+  }
+
   // Sync to Supabase staff_attendants table if configured
   const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';
   const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.SUPABASE_ANON_KEY || '';
@@ -2171,6 +2247,11 @@ export async function saveShopUser(user: Partial<ShopUser>): Promise<ShopUser> {
   };
   const updated: ShopUser = { ...current, ...user, updated_at: serverNow() };
   await db.meta.put({ key: 'user_info', value: updated });
+  try {
+    await db.users.put(updated);
+  } catch {
+    // ignore
+  }
 
   // Sync to Supabase users table and outbox
   const now = serverNow();
@@ -2201,6 +2282,80 @@ export async function saveShopUser(user: Partial<ShopUser>): Promise<ShopUser> {
   }
 
   return updated;
+}
+
+/**
+ * Resolves the exact human-readable name and role of the person who recorded a sale
+ */
+export function resolveSaleCashierDisplay(
+  sale: SaleHeader,
+  usersMap?: Map<string, { name: string; role?: string }>,
+  shop?: ShopMeta | null,
+  isEn = true
+): { name: string; roleLabel: string; isAttendant: boolean } {
+  // 1. Check explicit fields on sale
+  let rawName = (sale.cashier_name || sale.created_by_name || '').trim();
+  let rawRole = (sale.created_by_role || '').trim();
+
+  if (rawName.toLowerCase() === 'smartsort user' || rawName.toLowerCase() === 'cashier') {
+    rawName = '';
+  }
+
+  // 2. Look up in synchronized users / staff_attendants map by created_by ID
+  if (sale.created_by && usersMap?.has(sale.created_by)) {
+    const u = usersMap.get(sale.created_by)!;
+    if (!rawName && u.name && u.name.toLowerCase() !== 'smartsort user') {
+      rawName = u.name.trim();
+    }
+    if (!rawRole && u.role) {
+      rawRole = u.role;
+    }
+  }
+
+  // 3. Check if created_by matches shop owner user_id
+  if (shop) {
+    const isShopOwnerId =
+      sale.created_by === shop.user_id ||
+      sale.created_by === 'user-owner-001' ||
+      sale.created_by === 'user-admin-001' ||
+      rawRole === 'owner';
+
+    if (isShopOwnerId && rawRole !== 'attendant') {
+      if (!rawName && shop.owner_name && shop.owner_name.toLowerCase() !== 'smartsort user') {
+        rawName = shop.owner_name.trim();
+      }
+      if (!rawRole) rawRole = 'owner';
+    } else if (!rawRole && sale.created_by && sale.created_by !== shop.user_id) {
+      rawRole = 'attendant';
+    }
+  }
+
+  const isAttendant = rawRole === 'attendant';
+  const roleLabel = isAttendant
+    ? isEn
+      ? 'Attendant'
+      : 'Mhudumu'
+    : isEn
+    ? 'Owner'
+    : 'Mwenye Duka';
+
+  const finalName =
+    rawName ||
+    (isAttendant
+      ? isEn
+        ? 'Attendant'
+        : 'Mhudumu'
+      : (shop?.owner_name && shop.owner_name.toLowerCase() !== 'smartsort user'
+          ? shop.owner_name
+          : isEn
+          ? 'Owner'
+          : 'Mwenye Duka'));
+
+  return {
+    name: finalName,
+    roleLabel,
+    isAttendant,
+  };
 }
 
 /**

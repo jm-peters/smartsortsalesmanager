@@ -13,7 +13,16 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { db, type SaleHeader, type SaleItem, type UserRole } from '../lib/db/local';
+import {
+  db,
+  getShopMeta,
+  getShopUser,
+  getStaffAttendants,
+  resolveSaleCashierDisplay,
+  type SaleHeader,
+  type SaleItem,
+  type UserRole,
+} from '../lib/db/local';
 import { formatKES } from '../lib/money';
 import type { Language } from '../lib/i18n';
 
@@ -33,18 +42,48 @@ interface RecentTransactionsSectionProps {
 
 export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps> = ({
   language = 'en',
+  userRole = 'owner',
   defaultExpanded = true,
   allowVoid = true,
   onOpenReceipt,
   onOpenVoidModal,
 }) => {
   const isEn = language === 'en';
+  const isOwner = userRole === 'owner';
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
-  // Fetch the last 5 sales (both completed and voided for full audit transparency)
+  const shopMeta = useLiveQuery(() => getShopMeta(), []);
+  const loggedInUser = useLiveQuery(() => getShopUser(), []);
+  const allUsers = useLiveQuery(() => db.users.toArray(), []) || [];
+  const staffAttendants = useLiveQuery(() => getStaffAttendants(), []) || [];
+
+  const usersMap = useMemo(() => {
+    const map = new Map<string, { name: string; role?: string }>();
+    for (const u of allUsers) {
+      if (u.id && u.name) map.set(u.id, { name: u.name, role: u.role });
+    }
+    for (const att of staffAttendants) {
+      if (att.id && att.name) map.set(att.id, { name: att.name, role: 'attendant' });
+    }
+    if (loggedInUser?.id && loggedInUser?.name) {
+      map.set(loggedInUser.id, { name: loggedInUser.name, role: loggedInUser.role });
+    }
+    if (shopMeta?.user_id && shopMeta?.owner_name && !map.has(shopMeta.user_id)) {
+      map.set(shopMeta.user_id, { name: shopMeta.owner_name, role: 'owner' });
+    }
+    return map;
+  }, [allUsers, staffAttendants, loggedInUser, shopMeta]);
+
+  // Fetch the last 5 sales (Owner sees all shop sales; Attendant sees their own sales)
   const recentSales = useLiveQuery(
-    () => db.sales.orderBy('created_at').reverse().limit(5).toArray(),
-    []
+    async () => {
+      const all = await db.sales.orderBy('created_at').reverse().limit(30).toArray();
+      const filtered = isOwner
+        ? all
+        : all.filter((s) => !loggedInUser || s.created_by === loggedInUser.id);
+      return filtered.slice(0, 5);
+    },
+    [isOwner, loggedInUser?.id]
   ) || [];
 
   // Fetch sale items corresponding to the last 5 sales
@@ -165,6 +204,7 @@ export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps>
             const debtInfo = sale.debt_id ? debtMap.get(sale.debt_id) : debtMap.get(sale.id);
             const customerName = debtInfo?.name;
             const customerPhone = debtInfo?.phone;
+            const cashierInfo = resolveSaleCashierDisplay(sale, usersMap, shopMeta, isEn);
 
             return (
               <div
@@ -239,7 +279,7 @@ export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps>
                     <span>{formatTime(sale.created_at)}</span>
                     <span className="text-slate-300">•</span>
                     <span className="font-semibold text-slate-700">
-                      👤 {sale.cashier_name || sale.created_by_name || (sale.created_by_role === 'attendant' ? (isEn ? 'Attendant' : 'Mhudumu') : (isEn ? 'Owner' : 'Mwenyewe'))}
+                      👤 {cashierInfo.name} <span className="text-[10px] opacity-75">({cashierInfo.roleLabel})</span>
                     </span>
                   </div>
 

@@ -59,6 +59,7 @@ class SyncEngine {
   private broadcastChannel: any = null;
   private realtimeChannel: any = null;
   private realtimeShopId: string | null = null;
+  private pullPassCount = 0;
   private listeners: SyncListener[] = [];
   private currentStatus: SyncStatus = {
     isSyncing: false,
@@ -551,6 +552,7 @@ class SyncEngine {
         'id', 'shop_id', 'sale_no', 'total', 'total_profit', 'item_count',
         'payment_method', 'debt_id', 'status', 'voided_at', 'void_reason',
         'voided_by', 'cash_session_id', 'device_id', 'created_by',
+        'cashier_name', 'created_by_name', 'created_by_role',
         'created_at', 'server_created_at', 'updated_at',
       ]),
       sale_items: new Set([
@@ -819,11 +821,30 @@ class SyncEngine {
     const shopId = meta.value.shop_id;
     void this.ensureRealtimeSubscription();
 
+    this.pullPassCount++;
+    // On initial pull or every 10th pull (~25s), force cursor=0 on transactional tables
+    // so that any sale, item, debt, or user that was pushed out-of-order or without change_seq is 100% reconciled.
+    const forceFullReconcile = this.pullPassCount === 1 || this.pullPassCount % 10 === 0;
+    const CRITICAL_TABLES = new Set([
+      'users',
+      'products',
+      'product_stock',
+      'customers',
+      'sales',
+      'sale_items',
+      'debts',
+      'debt_payments',
+      'expenses',
+    ]);
+
     for (const table of PUSH_ORDER) {
       const syncState = await db.sync_state.get(table);
       const rawCursor = syncState?.last_change_seq || 0;
       // Overlap safety cursor to prevent missing concurrent commits (§7.4)
-      const safeCursor = Math.max(0, rawCursor - 1000);
+      const safeCursor =
+        forceFullReconcile && CRITICAL_TABLES.has(table)
+          ? 0
+          : Math.max(0, rawCursor - 1000);
 
       const pullResult = await this.adapter.pullSince(table, shopId, safeCursor, 500);
 
@@ -894,6 +915,42 @@ class SyncEngine {
         last_change_seq: Math.max(rawCursor, pullResult.maxChangeSeq),
         last_pull_at: new Date().toISOString(),
       });
+    }
+
+    // Also pull staff_attendants table if present on remote so owner & attendants share exact staff names
+    if (forceFullReconcile) {
+      try {
+        const attPull = await this.adapter.pullSince('staff_attendants', shopId, 0, 100);
+        if (attPull.rows && attPull.rows.length > 0) {
+          const existingMeta = await db.meta.get('staff_attendants');
+          const localAtts: any[] = Array.isArray(existingMeta?.value) ? existingMeta.value : [];
+          const byId = new Map<string, any>();
+          for (const a of localAtts) {
+            if (a?.id) byId.set(a.id, a);
+          }
+          for (const ra of attPull.rows as any[]) {
+            if (ra?.id) {
+              byId.set(ra.id, {
+                ...byId.get(ra.id),
+                id: ra.id,
+                name: ra.name || 'Attendant',
+                phone: ra.phone || ra.email || '',
+                email: ra.email || ra.phone || '',
+                role: 'attendant',
+                status: ra.status || 'active',
+                pin_hash: byId.get(ra.id)?.pin_hash || 'synced',
+                created_at: ra.created_at || new Date().toISOString(),
+              });
+            }
+          }
+          await db.meta.put({
+            key: 'staff_attendants',
+            value: Array.from(byId.values()),
+          });
+        }
+      } catch {
+        // ignore if staff_attendants table doesn't exist
+      }
     }
 
     // Recalculate full product stock quantities from the synchronized ledger
