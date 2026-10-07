@@ -67,6 +67,7 @@ interface SettingsScreenProps {
   tillNumber: string;
   onUpdateShopInfo: (name: string, till: string) => void;
   onLogout: () => void;
+  onOpenAdminPortal?: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
@@ -78,6 +79,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   tillNumber,
   onUpdateShopInfo,
   onLogout,
+  onOpenAdminPortal,
 }) => {
   const isOwner = userRole === 'owner';
   const isEn = language === 'en';
@@ -101,18 +103,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [currentUser, setCurrentUser] = useState<any>(null);
   const isPeterNgecu = isAdminUser(currentUser);
   const [biometricsEnabled, setBiometricsEnabled] = useState(false);
-
-  // Real live database metrics for Admin Dashboard
-  const [realProductCount, setRealProductCount] = useState(0);
-  const [realSaleCount, setRealSaleCount] = useState(0);
-  const [realCustomerCount, setRealCustomerCount] = useState(0);
-  const [realDebtCount, setRealDebtCount] = useState(0);
-  const [realExpenseCount, setRealExpenseCount] = useState(0);
-  const [realAuditLogCount, setRealAuditLogCount] = useState(0);
-  const [latestAuditLogs, setLatestAuditLogs] = useState<any[]>([]);
-  const [adminLoanApps, setAdminLoanApps] = useState<LoanApplication[]>(() => getAllLoanApplications());
-  const [adminEligibleAlerts, setAdminEligibleAlerts] = useState<EligibleShopAlert[]>(() => getAllEligibleShopAlerts());
-  const [loadTrigger, setLoadTrigger] = useState(0);
 
   // PIN Change Sheet
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
@@ -164,40 +154,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     }
   };
 
-  // Load real metrics for peterngecu001@gmail.com
-  useEffect(() => {
-    async function loadRealMetrics() {
-      try {
-        const prodCount = await db.products.count();
-        const saleCount = await db.sales.count();
-        const custCount = await db.customers.count();
-        const debtCount = await db.debts.count();
-        const expCount = await db.expenses.count();
-        const auditCount = await db.audit_log.count();
-        
-        const logs = await db.audit_log
-          .orderBy('created_at')
-          .reverse()
-          .limit(5)
-          .toArray();
-
-        setRealProductCount(prodCount);
-        setRealSaleCount(saleCount);
-        setRealCustomerCount(custCount);
-        setRealDebtCount(debtCount);
-        setRealExpenseCount(expCount);
-        setRealAuditLogCount(auditCount);
-        setLatestAuditLogs(logs);
-      } catch (err) {
-        console.warn('Could not load real admin metrics:', err);
-      }
-    }
-
-    if (isPeterNgecu) {
-      loadRealMetrics();
-    }
-  }, [currentUser, loadTrigger, isPeterNgecu]);
-
   // Load storage, sync subscriptions, and active user info
   useEffect(() => {
     async function loadUser() {
@@ -237,60 +193,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       }
     } finally {
       setSavingShop(false);
-    }
-  };
-
-  const handleSeedSampleProducts = async () => {
-    try {
-      const sampleProducts = [
-        { id: 'p-1', shop_id: 'shop-admin-001', name: 'Premium Sugar 1kg', selling_price: 180, cost_price: 155, stock: 45, search_key: 'sugar premium sukari', image_emoji: '🍚', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-        { id: 'p-2', shop_id: 'shop-admin-001', name: 'Fresh Milk 500ml', selling_price: 75, cost_price: 60, stock: 20, search_key: 'milk fresh maziwa', image_emoji: '🥛', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-        { id: 'p-3', shop_id: 'shop-admin-001', name: 'Cooking Oil 1L', selling_price: 320, cost_price: 280, stock: 15, search_key: 'oil cooking mafuta', image_emoji: '🍾', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-        { id: 'p-4', shop_id: 'shop-admin-001', name: 'Premium White Bread', selling_price: 65, cost_price: 52, stock: 30, search_key: 'bread premium mkate', image_emoji: '🍞', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-        { id: 'p-5', shop_id: 'shop-admin-001', name: 'Pure Kenya Tea Leaves', selling_price: 110, cost_price: 90, stock: 25, search_key: 'tea pure chai', image_emoji: '🍃', is_pinned: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
-      ];
-      for (const prod of sampleProducts) {
-        await db.products.put(prod as any);
-        await db.product_stock.put({
-          product_id: prod.id,
-          shop_id: prod.shop_id,
-          qty: prod.stock,
-          updated_at: new Date().toISOString()
-        });
-      }
-      setLoadTrigger(prev => prev + 1);
-      if (typeof window !== 'undefined') {
-        window.alert('Successfully populated catalog items to your local inventory! Go to Sales tab to start selling.');
-      }
-    } catch (err: any) {
-      if (typeof window !== 'undefined') {
-        window.alert(`Error seeding products: ${err.message}`);
-      }
-    }
-  };
-
-  const handleWipeTransactions = async () => {
-    if (typeof window !== 'undefined' && !window.confirm('Are you sure you want to delete ALL local sales, debts, expenses, and products? This cannot be undone.')) {
-      return;
-    }
-    try {
-      await db.products.clear();
-      await db.product_stock.clear();
-      await db.sales.clear();
-      await db.sale_items.clear();
-      await db.customers.clear();
-      await db.debts.clear();
-      await db.debt_payments.clear();
-      await db.expenses.clear();
-      await db.audit_log.clear();
-      setLoadTrigger(prev => prev + 1);
-      if (typeof window !== 'undefined') {
-        window.alert('Local database wiped clean successfully!');
-      }
-    } catch (err: any) {
-      if (typeof window !== 'undefined') {
-        window.alert(`Error wiping database: ${err.message}`);
-      }
     }
   };
 
@@ -538,262 +440,34 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </div>
 
-        {/* System-Wide Admin Dashboard (Strictly visible only to peterngecu001@gmail.com) */}
-        {isPeterNgecu && (
-          <div className="p-4 bg-slate-950 text-white rounded-2xl border-2 border-amber-500 shadow-md space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🛠</span>
-                <div>
-                  <h3 className="text-xs font-black tracking-wider text-amber-400 uppercase">
-                    SMARTSORT SOLUTIONS LIVE ADMIN
-                  </h3>
-                  <p className="text-[9px] font-mono text-slate-400">Authorized Admin: peterngecu001@gmail.com</p>
-                </div>
+        {/* Super-Admin Central Control Center Launcher (Strictly visible only to peterngecu001@gmail.com) */}
+        {isPeterNgecu && onOpenAdminPortal && (
+          <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl text-white shadow-xl flex items-center justify-between gap-3 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-black shadow-md">
+                <ShieldCheck className="w-6 h-6" />
               </div>
-              <button
-                type="button"
-                onClick={() => setLoadTrigger(prev => prev + 1)}
-                className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2 py-1 rounded-lg border border-slate-700 flex items-center gap-1 transition active:scale-95 cursor-pointer"
-              >
-                <RefreshCw className="w-3 h-3 text-amber-500" />
-                Refresh Live
-              </button>
-            </div>
-
-            {/* Live IndexedDB Table Metrics Grid */}
-            <div className="space-y-1.5">
-              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wide">
-                REAL-TIME DATABASE STATISTICS
-              </h4>
-              <div className="grid grid-cols-2 gap-2 text-center text-xs">
-                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Products</span>
-                  <span className="text-sm font-black text-emerald-400 tabular-nums">{realProductCount} Items</span>
+              <div>
+                <div className="text-xs font-black text-white flex items-center gap-1.5">
+                  <span>Super-Admin Portal</span>
+                  <span className="text-[8px] font-black uppercase px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    CENTRAL
+                  </span>
                 </div>
-                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Sales Headers</span>
-                  <span className="text-sm font-black text-emerald-400 tabular-nums">{realSaleCount} Receipts</span>
-                </div>
-                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Customers</span>
-                  <span className="text-sm font-black text-amber-400 tabular-nums">{realCustomerCount} Leads</span>
-                </div>
-                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase block">Debts / Ledgers</span>
-                  <span className="text-sm font-black text-amber-400 tabular-nums">{realDebtCount} Ledgers</span>
-                </div>
-                <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl space-y-0.5 col-span-2 flex justify-between px-3 items-center">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase">Tamper-Proof Audit logs:</span>
-                  <span className="text-xs font-black text-blue-400 tabular-nums">{realAuditLogCount} entries</span>
-                </div>
+                <p className="text-[10px] text-slate-400">
+                  {isEn ? 'Manage subscriptions, shops, database & loan credit lines' : 'Simamia maduka, data na viwango vya mikopo'}
+                </p>
               </div>
             </div>
 
-            {/* Restocking Loan Applications Portal Queue */}
-            <div className="space-y-2 border-t border-slate-800 pt-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-[10px] font-black uppercase text-amber-400 tracking-wide flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>RESTOCKING LOAN APPLICATIONS ({adminLoanApps.length})</span>
-                </h4>
-                <span className="text-[9px] text-slate-400">Merchant Financing Desk</span>
-              </div>
-
-              {adminLoanApps.length === 0 ? (
-                <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 text-[10px] text-slate-400 text-center">
-                  No merchant restocking loan applications in queue.
-                </div>
-              ) : (
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                  {adminLoanApps.map((app) => {
-                    const isPending = app.status === 'pending_review';
-                    return (
-                      <div
-                        key={app.id}
-                        className={`p-2.5 rounded-xl border text-xs space-y-2 ${
-                          isPending
-                            ? 'bg-slate-900 border-amber-500/70'
-                            : app.status === 'disbursed'
-                            ? 'bg-slate-900/60 border-emerald-600/50'
-                            : 'bg-slate-900/40 border-slate-800 opacity-70'
-                        }`}
-                      >
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <div className="font-bold text-white flex items-center gap-1.5">
-                              <span>{app.shop_name}</span>
-                              <span
-                                className={`text-[8px] px-1.5 py-0.2 rounded font-black uppercase ${
-                                  isPending
-                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                                    : app.status === 'disbursed'
-                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                                }`}
-                              >
-                                {app.status === 'pending_review' ? 'Pending Review (24h)' : app.status}
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-slate-400">
-                              {app.owner_name} • {app.phone} • {app.town || 'N/A'}
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <span className="font-black text-amber-400 text-sm tabular-nums">
-                              KES {app.amount.toLocaleString()}
-                            </span>
-                            <div className="text-[9px] text-slate-400">{app.duration_days} Days Term</div>
-                          </div>
-                        </div>
-
-                        <div className="p-1.5 bg-slate-950 rounded-lg text-[10px] text-slate-300 flex justify-between border border-slate-800">
-                          <span>Instalments: <strong className="text-emerald-400">{app.instalment_breakdown || app.repayment_plan_desc}</strong></span>
-                          <span>Today: KES {app.daily_sales_kes.toLocaleString()}</span>
-                        </div>
-
-                        {/* Actions */}
-                        <div className="flex items-center gap-1.5 pt-0.5">
-                          {isPending && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await updateLoanApplicationStatus(app.id, 'disbursed', 'Approved via Settings Admin');
-                                  setAdminLoanApps(getAllLoanApplications());
-                                  alert(`Loan of KES ${app.amount.toLocaleString()} for ${app.shop_name} approved and disbursed!`);
-                                }}
-                                className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[9px] font-black transition active:scale-95 cursor-pointer flex items-center justify-center gap-1"
-                              >
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>Approve & Disburse</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await updateLoanApplicationStatus(app.id, 'rejected', 'Declined via Settings Admin');
-                                  setAdminLoanApps(getAllLoanApplications());
-                                  alert(`Loan for ${app.shop_name} declined.`);
-                                }}
-                                className="px-2 py-1 bg-rose-600/80 hover:bg-rose-700 text-white rounded text-[9px] font-bold transition active:scale-95 cursor-pointer"
-                              >
-                                Decline
-                              </button>
-                            </>
-                          )}
-                          <a
-                            href={`https://wa.me/${(app.phone || '0712345678').replace(/\+/g, '').replace(/^0/, '254')}?text=${encodeURIComponent(
-                              `Hello ${app.owner_name}, regarding your SmartSort Restock Loan application for ${app.shop_name} of KES ${app.amount.toLocaleString()}...`
-                            )}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-2 py-1 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded text-[9px] font-bold flex items-center gap-1 cursor-pointer transition"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            <span>WhatsApp</span>
-                          </a>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* 3-Month Operational Eligible Shops Section */}
-            <div className="space-y-2 border-t border-slate-800 pt-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-[10px] font-black uppercase text-emerald-400 tracking-wide flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>3+ MONTHS OPERATIONAL ELIGIBLE SHOPS ({adminEligibleAlerts.length})</span>
-                </h4>
-                <span className="text-[9px] text-slate-400">Admin Milestone Detection</span>
-              </div>
-
-              {adminEligibleAlerts.length === 0 ? (
-                <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 text-[10px] text-slate-400 text-center">
-                  No shops currently flagged for 3+ months operational milestone.
-                </div>
-              ) : (
-                <div className="space-y-1.5 max-h-52 overflow-y-auto">
-                  {adminEligibleAlerts.map((alertItem) => (
-                    <div
-                      key={alertItem.id}
-                      className="p-2 bg-slate-900 border border-emerald-500/40 rounded-xl text-xs space-y-1"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-white text-[11px]">{alertItem.shop_name} ({alertItem.town})</span>
-                        <span className="text-[9px] text-emerald-300 font-mono bg-emerald-950 px-1.5 py-0.2 rounded border border-emerald-700">
-                          {alertItem.days_active} Days Active
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center text-[10px]">
-                        <span className="text-slate-400">Recommended Limit: <strong className="text-amber-400">KES {alertItem.calculated_limit.toLocaleString()}</strong></span>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await adminGrantLimitToShop(alertItem.shop_id, alertItem.calculated_limit);
-                            setAdminEligibleAlerts(getAllEligibleShopAlerts());
-                            alert(`Credit limit of KES ${alertItem.calculated_limit.toLocaleString()} awarded to ${alertItem.shop_name}!`);
-                          }}
-                          className="px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded text-[9px] transition cursor-pointer"
-                        >
-                          Grant Limit
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Admin Actions Utility Center */}
-            <div className="space-y-2 border-t border-slate-800 pt-3">
-              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wide">
-                SYSTEM UTILITIES & SEED OPTIONS
-              </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={handleSeedSampleProducts}
-                  className="p-2.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition border border-emerald-800 active:scale-95 cursor-pointer"
-                >
-                  🌱 Pre-populate Demo Inventory
-                </button>
-                <button
-                  type="button"
-                  onClick={handleWipeTransactions}
-                  className="p-2.5 bg-rose-950 hover:bg-rose-900 text-rose-300 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition border border-rose-800 active:scale-95 cursor-pointer"
-                >
-                  🚨 Wipe Local Database Clean
-                </button>
-              </div>
-            </div>
-
-            {/* Live Tamper-Proof Audit Log Trail */}
-            <div className="space-y-2 border-t border-slate-800 pt-3">
-              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wide">
-                LATEST SYSTEM OPERATIONS LOG (REAL)
-              </h4>
-              {latestAuditLogs.length === 0 ? (
-                <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 text-[10px] text-slate-400 text-center leading-relaxed">
-                  No system operations logged yet.<br />
-                  Sales transactions, cash drawer shifts, and stock movements generate automatic tamper-proof logs.
-                </div>
-              ) : (
-                <div className="p-2 bg-slate-900 rounded-xl border border-slate-800 divide-y divide-slate-800 text-[10px] font-mono">
-                  {latestAuditLogs.map((log) => (
-                    <div key={log.id} className="py-1.5 first:pt-0 last:pb-0 flex justify-between gap-2">
-                      <div className="space-y-0.5">
-                        <span className="font-bold text-slate-100 block">{log.action}</span>
-                        <span className="text-slate-400 block">{log.entity_type} ID: {log.entity_id.slice(0, 8)}...</span>
-                      </div>
-                      <span className="text-slate-500 shrink-0 text-right">{new Date(log.created_at).toLocaleTimeString()}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            <Button
+              variant="gradient"
+              size="sm"
+              onClick={onOpenAdminPortal}
+              className="font-bold text-xs shrink-0 py-2 px-3 shadow-md cursor-pointer"
+            >
+              {isEn ? 'Launch Portal →' : 'Fungua Portal →'}
+            </Button>
           </div>
         )}
 

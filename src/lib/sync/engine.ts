@@ -563,6 +563,7 @@ class SyncEngine {
         'id', 'shop_id', 'customer_id', 'customer_name', 'customer_phone',
         'principal', 'amount_paid', 'status', 'due_date', 'sale_id',
         'override_reason', 'device_id', 'created_by', 'recorded_by',
+        'created_by_name', 'created_by_role',
         'created_at', 'updated_at',
       ]),
       debt_payments: new Set([
@@ -898,6 +899,7 @@ class SyncEngine {
             } else if (table === 'debts') {
               row.principal = Number(row.principal || 0);
               row.amount_paid = Number(row.amount_paid || 0);
+              row.recorded_by = row.recorded_by || row.created_by_name || undefined;
             } else if (table === 'debt_payments' || table === 'expenses') {
               row.amount = Number(row.amount || 0);
             }

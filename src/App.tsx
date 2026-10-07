@@ -369,6 +369,7 @@ export default function App() {
               tillNumber={tillNumber}
               onUpdateShopInfo={handleUpdateShop}
               onLogout={() => setUser(null)}
+              onOpenAdminPortal={() => setIsAdminPortalOpen(true)}
             />
           )}
         </main>

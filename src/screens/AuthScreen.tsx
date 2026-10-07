@@ -981,9 +981,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
               // Pull shop data from Supabase matching this user/shop
               let shop: Shop | null = null;
+              const cleanAuthEmail = (data.user?.email || targetEmail).toLowerCase().trim();
               try {
                 let targetShopId = attendantShopId || data.user?.user_metadata?.shop_id;
-                const cleanAuthEmail = (data.user?.email || targetEmail).toLowerCase().trim();
 
                 // If targetShopId is not yet known, check public.users and public.staff_attendants by email
                 if (!targetShopId && cleanAuthEmail) {

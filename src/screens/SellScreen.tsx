@@ -31,6 +31,7 @@ import {
   generateSearchKey,
   seedKenyanCatalog,
   getShopMeta,
+  getShopUser,
   getOrCreateDeviceId,
   syncWriteThrough,
   lookupGlobalProductByBarcode,
@@ -303,6 +304,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
 
   // Live queries from Dexie scoped strictly to the active shop branch
   const activeShop = useLiveQuery(() => getShopMeta(), []);
+  const activeShopUser = useLiveQuery(() => getShopUser(), []);
   const activeShopId = activeShop?.shop_id;
 
   const products = useLiveQuery(
@@ -1717,6 +1719,24 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           {/* Deni Customer Selection (§Feature 3) */}
           {selectedPaymentMethod === 'deni' && (
             <div className="space-y-3 p-3.5 bg-amber-50/70 border border-amber-200 rounded-2xl">
+              <div className="p-2 rounded-xl bg-white/80 border border-amber-200/80 flex items-center justify-between text-xs">
+                <span className="text-slate-600 font-semibold">
+                  👤 {language === 'en' ? 'Credit Recorded By:' : 'Deni Linarekodiwa na:'}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded-md font-black ${
+                    isOwner
+                      ? 'bg-emerald-100 text-emerald-900'
+                      : 'bg-blue-100 text-blue-900'
+                  }`}
+                >
+                  {(activeShopUser?.name && activeShopUser.name !== 'Smartsort User'
+                    ? activeShopUser.name
+                    : activeShop?.owner_name || activeShopUser?.username || (isOwner ? 'Owner' : 'Attendant'))}{' '}
+                  ({isOwner ? (language === 'en' ? 'Owner' : 'Mwenye Duka') : (language === 'en' ? 'Attendant' : 'Mhudumu')})
+                </span>
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-800 mb-1">
                   {language === 'en' ? 'Customer on Credit:' : 'Mteja Anayedaiwa:'}

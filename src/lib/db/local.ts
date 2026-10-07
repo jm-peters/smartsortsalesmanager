@@ -142,6 +142,8 @@ export interface Debt {
   device_id: string;
   created_by?: string;
   recorded_by?: string;
+  created_by_name?: string;
+  created_by_role?: string;
 }
 
 export interface DebtPayment {
@@ -1309,6 +1311,8 @@ export async function recordSale(saleData: {
   if (debtRecord) {
     debtRecord.created_by = creatorId;
     debtRecord.recorded_by = cashierName;
+    debtRecord.created_by_name = cashierName;
+    debtRecord.created_by_role = creatorRole;
   }
 
   const saleHeader: SaleHeader = {
@@ -2369,6 +2373,82 @@ export function resolveSaleCashierDisplay(
           : isEn
           ? 'Owner'
           : 'Mwenye Duka'));
+
+  return {
+    name: finalName,
+    roleLabel,
+    isAttendant,
+  };
+}
+
+/**
+ * Resolves the exact human-readable name and role of the person who recorded a credit (Deni) entry
+ */
+export function resolveDebtRecorderDisplay(
+  debt: Debt,
+  linkedSale?: SaleHeader | null,
+  usersMap?: Map<string, { name: string; role?: string }>,
+  shop?: ShopMeta | null,
+  isEn = true
+): { name: string; roleLabel: string; isAttendant: boolean } {
+  if (linkedSale) {
+    return resolveSaleCashierDisplay(linkedSale, usersMap, shop, isEn);
+  }
+
+  let rawName = (debt.recorded_by || debt.created_by_name || '').trim();
+  let rawRole = (debt.created_by_role || '').trim();
+
+  if (rawName.toLowerCase() === 'smartsort user' || rawName.toLowerCase() === 'cashier') {
+    rawName = '';
+  }
+
+  if (debt.created_by && usersMap?.has(debt.created_by)) {
+    const u = usersMap.get(debt.created_by)!;
+    if (!rawName && u.name && u.name.toLowerCase() !== 'smartsort user') {
+      rawName = u.name.trim();
+    }
+    if (!rawRole && u.role) {
+      rawRole = u.role;
+    }
+  }
+
+  if (shop) {
+    const isShopOwnerId =
+      debt.created_by === shop.user_id ||
+      debt.created_by === 'user-owner-001' ||
+      debt.created_by === 'user-admin-001' ||
+      rawRole === 'owner';
+
+    if (isShopOwnerId && rawRole !== 'attendant') {
+      if (!rawName && shop.owner_name && shop.owner_name.toLowerCase() !== 'smartsort user') {
+        rawName = shop.owner_name.trim();
+      }
+      if (!rawRole) rawRole = 'owner';
+    } else if (!rawRole && debt.created_by && debt.created_by !== shop.user_id) {
+      rawRole = 'attendant';
+    }
+  }
+
+  const isAttendant = rawRole === 'attendant';
+  const roleLabel = isAttendant
+    ? isEn
+      ? 'Attendant'
+      : 'Mhudumu'
+    : isEn
+    ? 'Owner'
+    : 'Mwenye Duka';
+
+  const finalName =
+    rawName ||
+    (isAttendant
+      ? isEn
+        ? 'Attendant'
+        : 'Mhudumu'
+      : shop?.owner_name && shop.owner_name.toLowerCase() !== 'smartsort user'
+      ? shop.owner_name
+      : isEn
+      ? 'Owner'
+      : 'Mwenye Duka');
 
   return {
     name: finalName,

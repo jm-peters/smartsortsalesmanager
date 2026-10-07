@@ -110,6 +110,8 @@ export class SupabaseAdapter implements RemoteAdapter {
           delete copy.created_by_role;
         } else if (table === 'debts') {
           delete copy.recorded_by;
+          delete copy.created_by_name;
+          delete copy.created_by_role;
           delete copy.created_by;
         } else if (table === 'customers') {
           delete copy.loyalty_points;

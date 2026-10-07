@@ -33,6 +33,7 @@ import {
   getShopUser,
   getStaffAttendants,
   resolveSaleCashierDisplay,
+  resolveDebtRecorderDisplay,
   type OutboxEntry,
   type Debt,
   type Customer,
@@ -583,10 +584,33 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
     };
 
     const activeUser = await getShopUser();
-    const recordedByName =
-      (activeUser?.name && activeUser.name !== 'Smartsort User'
-        ? activeUser.name
-        : shop.owner_name || activeUser?.username || 'Cashier');
+    const staffList = await getStaffAttendants();
+    let creatorRole: UserRole = activeUser?.role || userRole || shop.role || 'owner';
+    const creatorId = activeUser?.id || shop.user_id;
+
+    const matchedAtt = staffList.find(
+      (a) =>
+        a.id === creatorId ||
+        (activeUser?.email && a.email?.toLowerCase() === activeUser.email.toLowerCase()) ||
+        (activeUser?.phone && a.phone.toLowerCase() === activeUser.phone.toLowerCase())
+    );
+    if (matchedAtt) {
+      creatorRole = 'attendant';
+    }
+
+    const rawRecorderName = (matchedAtt?.name || activeUser?.name || '').trim();
+    const isGenericName =
+      !rawRecorderName ||
+      rawRecorderName.toLowerCase() === 'smartsort user' ||
+      rawRecorderName.toLowerCase() === 'cashier';
+
+    const recordedByName = isGenericName
+      ? creatorRole === 'owner'
+        ? shop.owner_name && shop.owner_name !== 'Smartsort User'
+          ? shop.owner_name
+          : activeUser?.username || 'Shop Owner'
+        : matchedAtt?.name || activeUser?.username || 'Attendant'
+      : rawRecorderName;
 
     const debtId = crypto.randomUUID();
     const newDebt: Debt = {
@@ -604,8 +628,10 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       created_at: now,
       updated_at: now,
       device_id: deviceId,
-      created_by: activeUser?.id || shop.user_id,
+      created_by: creatorId,
       recorded_by: recordedByName,
+      created_by_name: recordedByName,
+      created_by_role: creatorRole,
     };
 
     await db.debts.put(newDebt);
@@ -965,7 +991,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                               )}
                             </div>
 
-                            <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                            <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
                               {group.customer.phone ? (
                                 <span className="flex items-center gap-1 font-medium">
                                   <Phone className="w-3 h-3 text-slate-400" />
@@ -980,6 +1006,22 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                               <span className="text-[11px] text-slate-500">
                                 {group.debts.length} {group.debts.length === 1 ? (isEn ? 'entry' : 'muamala') : (isEn ? 'entries' : 'miamala')}
                               </span>
+                              {group.debts[0] && (() => {
+                                const latestDebt = group.debts[0];
+                                const latestSale = latestDebt.sale_id ? salesMap.get(latestDebt.sale_id) : null;
+                                const latestRec = resolveDebtRecorderDisplay(latestDebt, latestSale, usersMap, shopMeta, isEn);
+                                return (
+                                  <span
+                                    className={`px-1.5 py-0.2 rounded text-[10px] font-semibold border ${
+                                      latestRec.isAttendant
+                                        ? 'bg-blue-50 text-blue-900 border-blue-200'
+                                        : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                    }`}
+                                  >
+                                    👤 {isEn ? 'Last recorded by:' : 'Imerekodiwa na:'} <strong>{latestRec.name}</strong> ({latestRec.roleLabel})
+                                  </span>
+                                );
+                              })()}
                             </div>
 
                             {/* Loyalty Points Badge */}
@@ -1109,12 +1151,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                             );
                             const sale = d.sale_id ? salesMap.get(d.sale_id) : null;
                             const items = d.sale_id ? saleItemsBySaleId.get(d.sale_id) || [] : [];
-                            const creditRecorder = sale
-                              ? resolveSaleCashierDisplay(sale, usersMap, shopMeta, isEn).name
-                              : d.recorded_by ||
-                                (d.created_by && usersMap.get(d.created_by)?.name) ||
-                                shopMeta?.owner_name ||
-                                (isEn ? 'Shop Staff' : 'Mhudumu');
+                            const creditRecorder = resolveDebtRecorderDisplay(d, sale, usersMap, shopMeta, isEn);
 
                             return (
                               <div key={d.id} className="p-3 space-y-1.5 text-xs">
@@ -1133,8 +1170,16 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                                       <span className="text-[10px] text-slate-400">
                                         ({new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
                                       </span>
-                                      <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-semibold">
-                                        👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'} <strong>{creditRecorder}</strong>
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                                          creditRecorder.isAttendant
+                                            ? 'bg-blue-50 text-blue-900 border-blue-200'
+                                            : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                        }`}
+                                      >
+                                        👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'}{' '}
+                                        <strong>{creditRecorder.name}</strong>{' '}
+                                        <span className="opacity-75">({creditRecorder.roleLabel})</span>
                                       </span>
                                     </div>
 
@@ -1228,12 +1273,7 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                 const isDefaulted = !isPaid && isDebtDefaulted(daysOld, balance);
                 const compAmount = calculateDefaultCompensation(balance);
                 const linkedSale = d.sale_id ? salesMap.get(d.sale_id) : null;
-                const recorderName = linkedSale
-                  ? resolveSaleCashierDisplay(linkedSale, usersMap, shopMeta, isEn).name
-                  : d.recorded_by ||
-                    (d.created_by && usersMap.get(d.created_by)?.name) ||
-                    shopMeta?.owner_name ||
-                    (isEn ? 'Shop Staff' : 'Mhudumu');
+                const recorderInfo = resolveDebtRecorderDisplay(d, linkedSale, usersMap, shopMeta, isEn);
 
                 return (
                   <div key={d.id} className="p-3.5 space-y-2">
@@ -1245,8 +1285,16 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                             {new Date(d.created_at).toLocaleDateString()} · {daysOld} {isEn ? 'days ago' : 'siku zilizopita'}
                           </span>
                           <span>•</span>
-                          <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-semibold">
-                            👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'} <strong>{recorderName}</strong>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                              recorderInfo.isAttendant
+                                ? 'bg-blue-50 text-blue-900 border-blue-200'
+                                : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                            }`}
+                          >
+                            👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'}{' '}
+                            <strong>{recorderInfo.name}</strong>{' '}
+                            <span className="opacity-75">({recorderInfo.roleLabel})</span>
                           </span>
                         </div>
                       </div>
@@ -1362,6 +1410,24 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
         subtitle={isEn ? 'Add dated credit entry to customer ledger' : 'Weka bidhaa au fedha alizochukua mteja leo'}
       >
         <div className="space-y-4 select-none">
+          <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-xs">
+            <span className="text-slate-500 font-semibold">
+              👤 {isEn ? 'Recorded by:' : 'Inarekodiwa na:'}
+            </span>
+            <span
+              className={`px-2 py-0.5 rounded-md font-black ${
+                isOwner
+                  ? 'bg-emerald-100 text-emerald-900'
+                  : 'bg-blue-100 text-blue-900'
+              }`}
+            >
+              {(loggedInUser?.name && loggedInUser.name !== 'Smartsort User'
+                ? loggedInUser.name
+                : shopMeta?.owner_name || loggedInUser?.username || (isOwner ? 'Owner' : 'Attendant'))}{' '}
+              ({isOwner ? (isEn ? 'Owner' : 'Mwenye Duka') : (isEn ? 'Attendant' : 'Mhudumu')})
+            </span>
+          </div>
+
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
               {isEn ? 'Select Customer:' : 'Chagua Mteja:'}
