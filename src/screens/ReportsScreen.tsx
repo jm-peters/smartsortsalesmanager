@@ -31,6 +31,7 @@ import {
   type SaleHeader,
   type SaleItem,
   type Product,
+  type ShopMeta,
   getActiveCashSession,
   getShopMeta,
   saveShopMeta,
@@ -38,6 +39,8 @@ import {
   getShopUser,
   getStaffAttendants,
   resolveSaleCashierDisplay,
+  getOwnerBranches,
+  switchActiveShopBranch,
 } from '../lib/db/local';
 import { syncEngine } from '../lib/sync/engine';
 import {
@@ -108,6 +111,15 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'stock_velocity' | 'past_sales'>('overview');
 
   const shopMeta = useLiveQuery(() => getShopMeta(), []);
+  const ownerBranches = useLiveQuery(() => getOwnerBranches(), [shopMeta?.shop_id]) || [];
+  const [selectedBranchFilter, setSelectedBranchFilter] = useState<string>('active');
+  const targetShopId =
+    selectedBranchFilter === 'active' || !isOwner
+      ? shopMeta?.shop_id
+      : selectedBranchFilter === 'all'
+      ? 'all'
+      : selectedBranchFilter;
+
   const loggedInUser = useLiveQuery(() => getShopUser(), []);
   const allUsers = useLiveQuery(() => db.users.toArray(), []) || [];
   const staffAttendants = useLiveQuery(() => getStaffAttendants(), []) || [];
@@ -115,7 +127,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   // Trigger an immediate sync pass when ReportsScreen opens so the Owner always sees 100% up-to-date sales from all attendants
   useEffect(() => {
     void syncEngine.triggerSync();
-  }, [activeTab, datePeriod]);
+  }, [activeTab, datePeriod, shopMeta?.shop_id]);
 
   // Build lookup map of user ID -> { name, role } across users table, staff_attendants, and active user
   const usersMap = useMemo(() => {
@@ -156,21 +168,65 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     await saveShopMeta({ include_credit_in_gross_sales: val });
   };
 
-  // Live queries
+  // Live queries scoped to selected branch (or all branches if 'all' is selected by a multi-shop owner)
+  const branchShopIdsSet = useMemo(() => {
+    return new Set(ownerBranches.map((b) => b.shop_id));
+  }, [ownerBranches]);
+
+  const matchesTargetShop = (recordShopId?: string | null) => {
+    if (!targetShopId || !recordShopId) return true;
+    if (targetShopId === 'all') {
+      return branchShopIdsSet.size > 0 ? branchShopIdsSet.has(recordShopId) : true;
+    }
+    return recordShopId === targetShopId;
+  };
+
   const allSales = useLiveQuery(
-    () => db.sales.orderBy('created_at').reverse().toArray(),
-    []
+    () =>
+      db.sales
+        .orderBy('created_at')
+        .reverse()
+        .filter((s) => matchesTargetShop(s.shop_id))
+        .toArray(),
+    [targetShopId, ownerBranches.length]
   ) || [];
 
-  const allItems = useLiveQuery(() => db.sale_items.toArray(), []) || [];
+  const allItems = useLiveQuery(
+    () =>
+      db.sale_items
+        .filter((it) => matchesTargetShop(it.shop_id))
+        .toArray(),
+    [targetShopId, ownerBranches.length]
+  ) || [];
   const allExpenses = useLiveQuery(
-    () => db.expenses.filter((e) => !e.deleted_at).toArray(),
-    []
+    () =>
+      db.expenses
+        .filter((e) => !e.deleted_at && matchesTargetShop(e.shop_id))
+        .toArray(),
+    [targetShopId, ownerBranches.length]
   ) || [];
 
-  const allProducts = useLiveQuery(() => db.products.filter((p) => !p.deleted_at).toArray(), []) || [];
-  const allStock = useLiveQuery(() => db.product_stock.toArray(), []) || [];
-  const allDebts = useLiveQuery(() => db.debts.toArray(), []) || [];
+  const allProducts = useLiveQuery(
+    () =>
+      db.products
+        .filter((p) => !p.deleted_at && matchesTargetShop(p.shop_id))
+        .toArray(),
+    [targetShopId, ownerBranches.length]
+  ) || [];
+  const allStock = useLiveQuery(
+    () =>
+      db.product_stock
+        .filter((s) => matchesTargetShop(s.shop_id))
+        .toArray(),
+    [targetShopId, ownerBranches.length]
+  ) || [];
+  const allDebts = useLiveQuery(
+    () =>
+      db.debts
+        .filter((d) => matchesTargetShop(d.shop_id))
+        .toArray(),
+    [targetShopId, ownerBranches.length]
+  ) || [];
 
   const stockMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -200,8 +256,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     return map;
   }, [allItems]);
 
-  // Compute date window
-  const { startDate, endDate, label } = useMemo(() => {
+  // Compute date window using local calendar boundaries + safe parsing so no sale is ever missed due to UTC/local day boundary differences
+  const { startDateMs, endDateMs, label } = useMemo(() => {
     const now = new Date();
     const start = new Date(now);
     const end = new Date(now);
@@ -211,8 +267,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       start.setHours(0, 0, 0, 0);
       end.setHours(23, 59, 59, 999);
       return {
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
+        startDateMs: start.getTime(),
+        endDateMs: end.getTime(),
         label: now.toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'short' }),
       };
     } else if (datePeriod === 'yesterday') {
@@ -221,50 +277,50 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       end.setDate(end.getDate() - 1);
       end.setHours(23, 59, 59, 999);
       return {
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
+        startDateMs: start.getTime(),
+        endDateMs: end.getTime(),
         label: isEn ? 'Yesterday' : 'Jana',
       };
     } else if (datePeriod === 'week') {
       start.setDate(start.getDate() - 7);
       start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
       return {
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
+        startDateMs: start.getTime(),
+        endDateMs: end.getTime(),
         label: isEn ? 'Weekly Report (Past 7 Days)' : 'Ripoti ya Wiki (Siku 7 Zilizopita)',
       };
     } else if (datePeriod === 'month') {
       start.setDate(1);
       start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
       return {
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
+        startDateMs: start.getTime(),
+        endDateMs: end.getTime(),
         label: isEn ? 'Monthly Report (This Month)' : 'Ripoti ya Mwezi (Mwezi Huu)',
       };
     } else {
       // Custom date range
-      const s = new Date(customStartDate);
-      s.setHours(0, 0, 0, 0);
-      const e = new Date(customEndDate);
-      e.setHours(23, 59, 59, 999);
+      const s = new Date(`${customStartDate}T00:00:00`);
+      const e = new Date(`${customEndDate}T23:59:59.999`);
       return {
-        startDate: s.toISOString(),
-        endDate: e.toISOString(),
+        startDateMs: s.getTime(),
+        endDateMs: e.getTime(),
         label: `${customStartDate} – ${customEndDate}`,
       };
     }
   }, [datePeriod, customStartDate, customEndDate, isEn]);
 
-  // Filtered Sales within Window
+  // Filtered Sales within Window (Owner sees 100% of completed sales in the shop; Attendant sees their own)
   const filteredSalesInWindow = useMemo(() => {
-    return allSales.filter(
-      (s) =>
-        s.created_at >= startDate &&
-        s.created_at <= endDate &&
-        s.status === 'completed' &&
-        (isOwner || !loggedInUser || s.created_by === loggedInUser.id)
-    );
-  }, [allSales, startDate, endDate, isOwner, loggedInUser]);
+    return allSales.filter((s) => {
+      if (s.status !== 'completed') return false;
+      const tMs = new Date(s.created_at).getTime();
+      if (Number.isNaN(tMs) || tMs < startDateMs || tMs > endDateMs) return false;
+      if (isOwner) return true;
+      return !loggedInUser || s.created_by === loggedInUser.id || s.recorded_by === loggedInUser.name;
+    });
+  }, [allSales, startDateMs, endDateMs, isOwner, loggedInUser]);
 
   // Search-filtered sales (for Past Sales list & search bar)
   const searchFilteredSales = useMemo(() => {
@@ -328,10 +384,11 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
 
   // Filtered Expenses within Window
   const filteredExpenses = useMemo(() => {
-    return allExpenses.filter(
-      (e) => e.created_at >= startDate && e.created_at <= endDate
-    );
-  }, [allExpenses, startDate, endDate]);
+    return allExpenses.filter((e) => {
+      const tMs = new Date(e.created_at).getTime();
+      return !Number.isNaN(tMs) && tMs >= startDateMs && tMs <= endDateMs;
+    });
+  }, [allExpenses, startDateMs, endDateMs]);
 
   // Payment Breakdown
   const paymentBreakdown = useMemo(() => {
@@ -603,6 +660,66 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       </div>
 
       <div className="p-4 space-y-4">
+        {/* Multi-Branch Selector for Owners with more than 1 shop */}
+        {isOwner && ownerBranches.length > 1 && (
+          <div className="p-3 bg-white rounded-2xl border border-emerald-200 shadow-2xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-black text-emerald-900 uppercase tracking-wider">
+                🏪 {isEn ? `Shop Branch Reports (${ownerBranches.length} Shops)` : `Ripoti za Matawi (${ownerBranches.length} Maduka)`}
+              </span>
+              <span className="text-[10px] font-bold text-slate-500">
+                {selectedBranchFilter === 'all'
+                  ? isEn
+                    ? 'All Branches Combined'
+                    : 'Matawi Yote Pamoja'
+                  : isEn
+                  ? 'Single Shop View'
+                  : 'Tawi Moja'}
+              </span>
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+              <button
+                type="button"
+                onClick={() => setSelectedBranchFilter('active')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition cursor-pointer ${
+                  selectedBranchFilter === 'active' || selectedBranchFilter === shopMeta?.shop_id
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                {shopMeta?.avatar_emoji || '🏪'} {shopMeta?.shop_name} ({isEn ? 'Current' : 'Sasa'})
+              </button>
+              {ownerBranches
+                .filter((b) => b.shop_id !== shopMeta?.shop_id)
+                .map((branch) => (
+                  <button
+                    key={branch.shop_id}
+                    type="button"
+                    onClick={async () => {
+                      await switchActiveShopBranch(branch.shop_id);
+                      setSelectedBranchFilter('active');
+                      void syncEngine.triggerSync();
+                    }}
+                    className="px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 bg-slate-100 text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 border border-slate-200 transition cursor-pointer"
+                  >
+                    {branch.avatar_emoji || '🏪'} {branch.shop_name}
+                  </button>
+                ))}
+              <button
+                type="button"
+                onClick={() => setSelectedBranchFilter('all')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition cursor-pointer ${
+                  selectedBranchFilter === 'all'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                📊 {isEn ? 'All Shops Combined' : 'Maduka Yote'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Date Filter Chips & Period Selector */}
         <div className="grid grid-cols-5 gap-1 bg-slate-100 p-1 rounded-xl">
           {[
@@ -1015,6 +1132,18 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Transaction History View inside Reports Overview */}
+            <RecentTransactionsSection
+              language={language}
+              userRole={userRole}
+              defaultExpanded={true}
+              allowVoid={true}
+              onOpenReceipt={(sale, items, customerName, customerPhone) =>
+                setSelectedReceipt({ sale, items, customerName, customerPhone })
+              }
+              onOpenVoidModal={(sale, items) => setSaleToVoid({ sale, items })}
+            />
           </div>
         )}
 
@@ -1244,8 +1373,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                                   : 'bg-emerald-50 text-emerald-900 border-emerald-200'
                               }`}
                             >
-                              👤 {isEn ? 'Sold by:' : 'Aliyeuza:'}{' '}
-                              <strong>{cashierInfo.name}</strong>{' '}
+                              👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'}{' '}
+                              <strong>{sale.recorded_by || cashierInfo.name}</strong>{' '}
                               <span className="opacity-75">({cashierInfo.roleLabel})</span>
                             </span>
                             {cust && (

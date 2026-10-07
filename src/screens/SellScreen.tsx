@@ -200,8 +200,15 @@ export const SellScreen: React.FC<SellScreenProps> = ({
       const cleanCode = barcode.trim();
       if (!cleanCode) return;
 
+      const currentShopMeta = await getShopMeta();
       const existingProduct = await db.products
-        .filter((p) => !p.deleted_at && Boolean(p.barcode) && p.barcode!.trim().toLowerCase() === cleanCode.toLowerCase())
+        .filter(
+          (p) =>
+            !p.deleted_at &&
+            (!p.shop_id || p.shop_id === currentShopMeta.shop_id) &&
+            Boolean(p.barcode) &&
+            p.barcode!.trim().toLowerCase() === cleanCode.toLowerCase()
+        )
         .first();
 
       if (existingProduct) {
@@ -294,13 +301,25 @@ export const SellScreen: React.FC<SellScreenProps> = ({
     isOverdue: boolean;
   } | null>(null);
 
-  // Live queries from Dexie
+  // Live queries from Dexie scoped strictly to the active shop branch
+  const activeShop = useLiveQuery(() => getShopMeta(), []);
+  const activeShopId = activeShop?.shop_id;
+
   const products = useLiveQuery(
-    () => db.products.filter((p) => p.is_active && !p.deleted_at).toArray(),
-    []
+    () =>
+      db.products
+        .filter((p) => p.is_active && !p.deleted_at && (!activeShopId || !p.shop_id || p.shop_id === activeShopId))
+        .toArray(),
+    [activeShopId]
   ) || [];
 
-  const stocks = useLiveQuery(() => db.product_stock.toArray(), []) || [];
+  const stocks = useLiveQuery(
+    () =>
+      db.product_stock
+        .filter((s) => !activeShopId || !s.shop_id || s.shop_id === activeShopId)
+        .toArray(),
+    [activeShopId]
+  ) || [];
   const stockMap = useMemo(() => {
     const map = new Map<string, number>();
     stocks.forEach((s) => map.set(s.product_id, s.qty));
@@ -308,16 +327,30 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   }, [stocks]);
 
   const heldCarts = useLiveQuery(
-    () => db.held_carts.orderBy('created_at').reverse().toArray(),
-    []
+    () =>
+      db.held_carts
+        .orderBy('created_at')
+        .reverse()
+        .filter((c) => !activeShopId || !c.shop_id || c.shop_id === activeShopId)
+        .toArray(),
+    [activeShopId]
   ) || [];
 
   const customers = useLiveQuery(
-    () => db.customers.filter((c) => !c.deleted_at).toArray(),
-    []
+    () =>
+      db.customers
+        .filter((c) => !c.deleted_at && (!activeShopId || !c.shop_id || c.shop_id === activeShopId))
+        .toArray(),
+    [activeShopId]
   ) || [];
 
-  const totalSalesCount = useLiveQuery(() => db.sales.count(), []) || 0;
+  const totalSalesCount = useLiveQuery(
+    () =>
+      db.sales
+        .filter((s) => !activeShopId || !s.shop_id || s.shop_id === activeShopId)
+        .count(),
+    [activeShopId]
+  ) || 0;
 
   // Filtered products ranked by prefix match
   const filteredProducts = useMemo(() => {

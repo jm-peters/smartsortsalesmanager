@@ -552,7 +552,7 @@ class SyncEngine {
         'id', 'shop_id', 'sale_no', 'total', 'total_profit', 'item_count',
         'payment_method', 'debt_id', 'status', 'voided_at', 'void_reason',
         'voided_by', 'cash_session_id', 'device_id', 'created_by',
-        'cashier_name', 'created_by_name', 'created_by_role',
+        'recorded_by', 'cashier_name', 'created_by_name', 'created_by_role',
         'created_at', 'server_created_at', 'updated_at',
       ]),
       sale_items: new Set([
@@ -562,7 +562,8 @@ class SyncEngine {
       debts: new Set([
         'id', 'shop_id', 'customer_id', 'customer_name', 'customer_phone',
         'principal', 'amount_paid', 'status', 'due_date', 'sale_id',
-        'override_reason', 'device_id', 'created_at', 'updated_at',
+        'override_reason', 'device_id', 'created_by', 'recorded_by',
+        'created_at', 'updated_at',
       ]),
       debt_payments: new Set([
         'id', 'shop_id', 'debt_id', 'amount', 'method', 'cash_session_id',
@@ -822,9 +823,9 @@ class SyncEngine {
     void this.ensureRealtimeSubscription();
 
     this.pullPassCount++;
-    // On initial pull or every 10th pull (~25s), force cursor=0 on transactional tables
-    // so that any sale, item, debt, or user that was pushed out-of-order or without change_seq is 100% reconciled.
-    const forceFullReconcile = this.pullPassCount === 1 || this.pullPassCount % 10 === 0;
+    // Force full reconciliation on transactional tables every 3rd pull (~7.5s) or initial pull
+    // so that every single sale, item, debt, customer, or user from any attendant device is 100% present on the owner's device.
+    const forceFullReconcile = this.pullPassCount === 1 || this.pullPassCount % 3 === 0;
     const CRITICAL_TABLES = new Set([
       'users',
       'products',
@@ -887,6 +888,7 @@ class SyncEngine {
               row.total = Number(row.total || 0);
               row.total_profit = Number(row.total_profit || 0);
               row.item_count = Number(row.item_count || 1);
+              row.recorded_by = row.recorded_by || row.cashier_name || row.created_by_name || undefined;
             } else if (table === 'sale_items') {
               row.qty = Number(row.qty || 0);
               row.unit_price = Number(row.unit_price || 0);

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Plus,
@@ -31,6 +31,8 @@ import {
   getOrCreateDeviceId,
   syncWriteThrough,
   getShopUser,
+  getStaffAttendants,
+  resolveSaleCashierDisplay,
   type OutboxEntry,
   type Debt,
   type Customer,
@@ -38,6 +40,7 @@ import {
   type SaleHeader,
   type SaleItem,
 } from '../lib/db/local';
+import { syncEngine } from '../lib/sync/engine';
 import {
   toKES,
   formatKES,
@@ -126,21 +129,67 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
   const [loyaltyModalCustomer, setLoyaltyModalCustomer] = useState<Customer | null>(null);
   const [loyaltyDeltaStr, setLoyaltyDeltaStr] = useState('');
 
-  // Live queries
+  // Live queries scoped strictly to active shop branch
   const shopMeta = useLiveQuery(() => getShopMeta(), []);
+  const activeShopId = shopMeta?.shop_id;
   const loggedInUser = useLiveQuery(() => getShopUser(), []);
+  const allUsers = useLiveQuery(() => db.users.toArray(), []) || [];
+  const staffAttendants = useLiveQuery(() => getStaffAttendants(), []) || [];
+
+  // Trigger an immediate sync pass when DeniScreen mounts so all credit entries recorded by attendants appear immediately for the owner
+  useEffect(() => {
+    void syncEngine.triggerSync();
+  }, [activeShopId, filterStatus]);
+
+  const usersMap = useMemo(() => {
+    const map = new Map<string, { name: string; role?: string }>();
+    for (const u of allUsers) {
+      if (u.id && u.name) map.set(u.id, { name: u.name, role: u.role });
+    }
+    for (const att of staffAttendants) {
+      if (att.id && att.name) map.set(att.id, { name: att.name, role: 'attendant' });
+    }
+    if (loggedInUser?.id && loggedInUser?.name) {
+      map.set(loggedInUser.id, { name: loggedInUser.name, role: loggedInUser.role });
+    }
+    if (shopMeta?.user_id && shopMeta?.owner_name && !map.has(shopMeta.user_id)) {
+      map.set(shopMeta.user_id, { name: shopMeta.owner_name, role: 'owner' });
+    }
+    return map;
+  }, [allUsers, staffAttendants, loggedInUser, shopMeta]);
+
   const debts = useLiveQuery(
-    () => db.debts.orderBy('created_at').reverse().toArray(),
-    []
+    () =>
+      db.debts
+        .orderBy('created_at')
+        .reverse()
+        .filter((d) => !activeShopId || !d.shop_id || d.shop_id === activeShopId)
+        .toArray(),
+    [activeShopId]
   ) || [];
 
   const customers = useLiveQuery(
-    () => db.customers.filter((c) => c.deleted_at === null).toArray(),
-    []
+    () =>
+      db.customers
+        .filter((c) => c.deleted_at === null && (!activeShopId || !c.shop_id || c.shop_id === activeShopId))
+        .toArray(),
+    [activeShopId]
   ) || [];
 
-  const allSales = useLiveQuery(() => db.sales.toArray(), []) || [];
-  const allSaleItems = useLiveQuery(() => db.sale_items.toArray(), []) || [];
+  const allSales = useLiveQuery(
+    () =>
+      db.sales
+        .filter((s) => !activeShopId || !s.shop_id || s.shop_id === activeShopId)
+        .toArray(),
+    [activeShopId]
+  ) || [];
+  const allSaleItems = useLiveQuery(
+    () =>
+      db.sale_items
+        .filter((it) => !activeShopId || !it.shop_id || it.shop_id === activeShopId)
+        .toArray(),
+    [activeShopId]
+  ) || [];
 
   const customerMap = useMemo(() => {
     const map = new Map<string, Customer>();
@@ -533,6 +582,12 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       phone: custPhone.trim() || null,
     };
 
+    const activeUser = await getShopUser();
+    const recordedByName =
+      (activeUser?.name && activeUser.name !== 'Smartsort User'
+        ? activeUser.name
+        : shop.owner_name || activeUser?.username || 'Cashier');
+
     const debtId = crypto.randomUUID();
     const newDebt: Debt = {
       id: debtId,
@@ -549,6 +604,8 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
       created_at: now,
       updated_at: now,
       device_id: deviceId,
+      created_by: activeUser?.id || shop.user_id,
+      recorded_by: recordedByName,
     };
 
     await db.debts.put(newDebt);
@@ -1052,12 +1109,18 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                             );
                             const sale = d.sale_id ? salesMap.get(d.sale_id) : null;
                             const items = d.sale_id ? saleItemsBySaleId.get(d.sale_id) || [] : [];
+                            const creditRecorder = sale
+                              ? resolveSaleCashierDisplay(sale, usersMap, shopMeta, isEn).name
+                              : d.recorded_by ||
+                                (d.created_by && usersMap.get(d.created_by)?.name) ||
+                                shopMeta?.owner_name ||
+                                (isEn ? 'Shop Staff' : 'Mhudumu');
 
                             return (
                               <div key={d.id} className="p-3 space-y-1.5 text-xs">
                                 <div className="flex items-start justify-between gap-2">
                                   <div>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       <Calendar className="w-3.5 h-3.5 text-slate-400" />
                                       <span className="font-bold text-slate-800">
                                         {new Date(d.created_at).toLocaleDateString('en-KE', {
@@ -1069,6 +1132,9 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                                       </span>
                                       <span className="text-[10px] text-slate-400">
                                         ({new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-semibold">
+                                        👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'} <strong>{creditRecorder}</strong>
                                       </span>
                                     </div>
 
@@ -1161,14 +1227,27 @@ export const DeniScreen: React.FC<DeniScreenProps> = ({
                 );
                 const isDefaulted = !isPaid && isDebtDefaulted(daysOld, balance);
                 const compAmount = calculateDefaultCompensation(balance);
+                const linkedSale = d.sale_id ? salesMap.get(d.sale_id) : null;
+                const recorderName = linkedSale
+                  ? resolveSaleCashierDisplay(linkedSale, usersMap, shopMeta, isEn).name
+                  : d.recorded_by ||
+                    (d.created_by && usersMap.get(d.created_by)?.name) ||
+                    shopMeta?.owner_name ||
+                    (isEn ? 'Shop Staff' : 'Mhudumu');
 
                 return (
                   <div key={d.id} className="p-3.5 space-y-2">
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <div className="font-bold text-sm text-slate-900">{d.customer_name}</div>
-                        <div className="text-xs text-slate-500">
-                          {new Date(d.created_at).toLocaleDateString()} · {daysOld} {isEn ? 'days ago' : 'siku zilizopita'}
+                        <div className="text-xs text-slate-500 flex items-center gap-1.5 flex-wrap mt-0.5">
+                          <span>
+                            {new Date(d.created_at).toLocaleDateString()} · {daysOld} {isEn ? 'days ago' : 'siku zilizopita'}
+                          </span>
+                          <span>•</span>
+                          <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-semibold">
+                            👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'} <strong>{recorderName}</strong>
+                          </span>
                         </div>
                       </div>
                       <div className="text-right">

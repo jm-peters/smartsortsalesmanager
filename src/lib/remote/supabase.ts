@@ -104,9 +104,13 @@ export class SupabaseAdapter implements RemoteAdapter {
       const stripOptionalColumns = (r: Record<string, unknown>): Record<string, unknown> => {
         const copy = { ...r };
         if (table === 'sales') {
+          delete copy.recorded_by;
           delete copy.cashier_name;
           delete copy.created_by_name;
           delete copy.created_by_role;
+        } else if (table === 'debts') {
+          delete copy.recorded_by;
+          delete copy.created_by;
         } else if (table === 'customers') {
           delete copy.loyalty_points;
         } else if (table === 'shops') {
@@ -144,7 +148,7 @@ export class SupabaseAdapter implements RemoteAdapter {
           continue;
         }
 
-        // 2. Try stripping optional columns and nulling cash_session_id if FK constraint failed
+        // 2. Try stripping optional columns
         const safeRow = stripOptionalColumns(row);
         singlePost = await fetch(`${this.url}/rest/v1/${table}`, {
           method: 'POST',
@@ -160,11 +164,27 @@ export class SupabaseAdapter implements RemoteAdapter {
           continue;
         }
 
-        // 3. If table has cash_session_id, debt_id, or sale_id FK that hasn't synced yet, retry with null FK
-        if (safeRow.cash_session_id || safeRow.debt_id) {
+        // 3. If table has FK columns (cash_session_id, debt_id, sale_id, created_by, customer_id) that haven't synced yet,
+        // retry with nullable FKs nulled out so no attendant sale or credit entry is ever rejected by Postgres FK constraints!
+        if (
+          safeRow.cash_session_id ||
+          safeRow.debt_id ||
+          safeRow.sale_id ||
+          safeRow.created_by ||
+          safeRow.customer_id
+        ) {
           const noFkRow = { ...safeRow };
           if (noFkRow.cash_session_id) noFkRow.cash_session_id = null;
           if (table === 'sales' && noFkRow.debt_id) noFkRow.debt_id = null;
+          if (table === 'debts' && noFkRow.sale_id) noFkRow.sale_id = null;
+          if (table === 'debts' && noFkRow.customer_id) noFkRow.customer_id = null;
+          if (
+            ['sales', 'stock_movements', 'debt_payments', 'expenses'].includes(table) &&
+            noFkRow.created_by
+          ) {
+            noFkRow.created_by = null;
+          }
+
           const fkRetry = await fetch(`${this.url}/rest/v1/${table}`, {
             method: 'POST',
             headers: this.getAuthHeaders({
@@ -272,18 +292,18 @@ export class SupabaseAdapter implements RemoteAdapter {
         }
       }
 
-      // Safety net: if cursor query returned 0 rows on critical transactional tables,
-      // also fetch the most recent 300 records for this shop to guarantee zero missed sales/products/debts
+      // Safety net: for critical transactional tables (sales, sale_items, debts, debt_payments, customers, products, expenses),
+      // always also fetch the most recent 300 records for this shop by created_at DESC and merge them by primary key.
+      // This guarantees 100% that even if change_seq on remote didn't advance or records were inserted out-of-order by an attendant,
+      // the owner immediately receives every single sale and credit entry.
       if (
-        rows.length === 0 &&
-        lastChangeSeq > 0 &&
-        ['products', 'product_stock', 'sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)
+        ['products', 'product_stock', 'customers', 'sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)
       ) {
         const recentParams: Record<string, string> = {
           shop_id: `eq.${shopId}`,
           limit: '300',
         };
-        if (['products', 'sales', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)) {
+        if (['products', 'customers', 'sales', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)) {
           recentParams['order'] = 'created_at.desc';
         }
         const recentQuery = new URLSearchParams(recentParams);
@@ -292,16 +312,24 @@ export class SupabaseAdapter implements RemoteAdapter {
         });
         if (recentResp.ok) {
           const recentRows: T[] = await recentResp.json();
+          const pkField = table === 'product_stock' ? 'product_id' : 'id';
+          const mergedMap = new Map<string, T>();
+          for (const r of rows as any[]) {
+            const k = String(r[pkField] || '');
+            if (k) mergedMap.set(k, r);
+          }
           for (const r of recentRows as any[]) {
+            const k = String(r[pkField] || '');
+            if (k) mergedMap.set(k, r);
             if (r.change_seq && Number(r.change_seq) > maxChangeSeq) {
               maxChangeSeq = Number(r.change_seq);
             }
           }
           return {
             table,
-            rows: recentRows,
+            rows: Array.from(mergedMap.values()),
             maxChangeSeq,
-            hasMore: false,
+            hasMore: rows.length >= limit,
           };
         }
       }

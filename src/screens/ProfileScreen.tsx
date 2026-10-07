@@ -34,10 +34,14 @@ import {
   saveShopUser,
   getStaffAttendants,
   removeStaffAttendant,
+  getOwnerBranches,
+  createNewShopBranch,
+  switchActiveShopBranch,
   type ShopMeta,
   type ShopUser,
   type StaffAttendant,
 } from '../lib/db/local';
+import { syncEngine } from '../lib/sync/engine';
 import {
   submitLoanApplication,
   getAllLoanApplications,
@@ -238,9 +242,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   );
 
   // Accordion expansion state (Doc 2 §6)
-  const [expandedSection, setExpandedSection] = useState<'contact' | 'location' | 'staff' | 'plan' | 'loan' | null>(
+  const [expandedSection, setExpandedSection] = useState<'contact' | 'location' | 'staff' | 'plan' | 'branches' | 'loan' | null>(
     'contact'
   );
+
+  // Multi-Branch / Multi-Shop state for owners with more than 1 shop
+  const [ownerBranches, setOwnerBranches] = useState<ShopMeta[]>([]);
+  const [isAddBranchModalOpen, setIsAddBranchModalOpen] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [newBranchTown, setNewBranchTown] = useState('');
+  const [newBranchCounty, setNewBranchCounty] = useState('Nairobi');
+  const [newBranchTill, setNewBranchTill] = useState('');
+  const [isCreatingBranch, setIsCreatingBranch] = useState(false);
 
   // Live Stats computed locally from Dexie (Doc 2 §4)
   const [todaySalesKES, setTodaySalesKES] = useState(0);
@@ -264,8 +277,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         startOfWeek.setDate(startOfWeek.getDate() - 7);
         const startOfWeekISO = startOfWeek.toISOString();
 
-        // Query sales
-        const sales = await db.sales.filter((s) => s.status === 'completed').toArray();
+        // Query sales for this active shop branch
+        const sales = await db.sales
+          .filter((s) => s.status === 'completed' && (!s.shop_id || s.shop_id === shop.shop_id))
+          .toArray();
         let todaySum = 0;
         let weekSum = 0;
 
@@ -277,14 +292,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         setTodaySalesKES(todaySum);
         setWeekSalesKES(weekSum);
 
-        const custs = await db.customers.count();
+        const custs = await db.customers
+          .filter((c) => !c.deleted_at && (!c.shop_id || c.shop_id === shop.shop_id))
+          .count();
         setCustomerCount(custs);
 
-        const prods = await db.products.filter((p) => p.is_active && !p.deleted_at).count();
+        const prods = await db.products
+          .filter((p) => p.is_active && !p.deleted_at && (!p.shop_id || p.shop_id === shop.shop_id))
+          .count();
         setProductCount(prods);
 
         const attendants = await getStaffAttendants();
         setStaffList(attendants);
+
+        const branches = await getOwnerBranches();
+        setOwnerBranches(branches);
 
         // System Auto-Evaluation of credit limit based on activity & 3-month eligibility tracking
         let awardedLimit = 0;
@@ -1089,7 +1111,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </span>
                 </div>
 
-                {/* Instant Pay Now Button & Edit (Owner Only) */}
+                 {/* Instant Pay Now Button & Edit (Owner Only) */}
                 {isOwner ? (
                   <>
                     <button
@@ -1118,6 +1140,157 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </div>
             )}
           </div>
+
+          {/* Section 5: Multi-Shop Branches (For Owners with More Than 1 Shop) */}
+          {isOwner && (
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+              <button
+                type="button"
+                onClick={() =>
+                  setExpandedSection(expandedSection === 'branches' ? null : 'branches')
+                }
+                className="w-full p-3.5 flex items-center justify-between text-left"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                    <Store className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-black text-slate-900">
+                      {isEn ? 'Shop Branches & Multi-Store Control' : 'Matawi ya Duka & Usimamizi'}
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      {isEn
+                        ? `${ownerBranches.length} ${ownerBranches.length === 1 ? 'Shop' : 'Shops'} • Separate Stock, Sales & Per-Shop Billing`
+                        : `Maduka ${ownerBranches.length} • Stoo, Mauzo na Ada kwa Kila Duka`}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800">
+                    {ownerBranches.length} {ownerBranches.length === 1 ? (isEn ? 'Branch' : 'Tawi') : (isEn ? 'Branches' : 'Matawi')}
+                  </span>
+                  {expandedSection === 'branches' ? (
+                    <ChevronUp className="w-4 h-4 text-slate-400" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-slate-400" />
+                  )}
+                </div>
+              </button>
+
+              {expandedSection === 'branches' && (
+                <div className="px-3.5 pb-3.5 pt-1 border-t border-slate-100 space-y-2.5 text-xs">
+                  <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 leading-relaxed">
+                    {isEn
+                      ? 'Manage multiple shops from one account. Each shop has its own isolated products, stock levels, attendants, credit book, reports, and independent subscription payment (KES 30/day per shop).'
+                      : 'Simamia maduka mengi kwenye akaunti moja. Kila duka lina bidhaa zake, stoo yake, wahudumu wake, ripoti zake, na malipo yake ya ada (KES 30/siku kwa kila duka).'}
+                  </div>
+
+                  <div className="space-y-2">
+                    {ownerBranches.map((branch, idx) => {
+                      const isCurrent = branch.shop_id === shop.shop_id;
+                      const isBranchActive =
+                        branch.plan_status === 'active' &&
+                        (!branch.subscription_paid_until ||
+                          new Date(branch.subscription_paid_until).getTime() > Date.now());
+
+                      return (
+                        <div
+                          key={branch.shop_id}
+                          className={`p-3 rounded-xl border transition flex items-center justify-between gap-2 ${
+                            isCurrent
+                              ? 'bg-emerald-50/70 border-emerald-400 ring-1 ring-emerald-300'
+                              : 'bg-white border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="min-w-0 flex items-center gap-2.5">
+                            <div className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-lg shrink-0 shadow-2xs">
+                              {branch.avatar_emoji || '🏪'}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-black text-slate-900 truncate flex items-center gap-1.5">
+                                <span className="truncate">{branch.shop_name}</span>
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
+                                  #{idx + 1}
+                                </span>
+                                {isCurrent && (
+                                  <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-emerald-600 text-white uppercase">
+                                    {isEn ? 'Active' : 'Sasa'}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-500 flex items-center gap-1.5 flex-wrap mt-0.5">
+                                <span>📍 {branch.town || 'Nairobi'}</span>
+                                <span>•</span>
+                                <span
+                                  className={`font-bold ${
+                                    isBranchActive ? 'text-emerald-700' : 'text-amber-700'
+                                  }`}
+                                >
+                                  {isBranchActive
+                                    ? isEn
+                                      ? 'Plan Active (KES 30/day)'
+                                      : 'Ada Hai (KES 30/siku)'
+                                    : isEn
+                                    ? 'Payment Due'
+                                    : 'Ada Inahitajika'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isCurrent ? (
+                              <button
+                                type="button"
+                                onClick={() => setShowPaymentModal(true)}
+                                className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black transition cursor-pointer"
+                              >
+                                {isEn ? 'Pay Shop Plan' : 'Lipa Ada'}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const switched = await switchActiveShopBranch(branch.shop_id);
+                                  onUpdateShop(switched);
+                                  const refreshedBranches = await getOwnerBranches();
+                                  setOwnerBranches(refreshedBranches);
+                                  void syncEngine.triggerSync();
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[10px] font-black transition cursor-pointer"
+                              >
+                                {isEn ? 'Switch to Shop →' : 'Fungua Duka →'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewBranchName('');
+                      setNewBranchTown(shop.town || '');
+                      setNewBranchCounty(shop.county || 'Nairobi');
+                      setNewBranchTill(shop.till_number || '');
+                      setIsAddBranchModalOpen(true);
+                    }}
+                    className="w-full py-2.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-900 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Store className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>
+                      {isEn
+                        ? '+ Add Another Shop Branch (Isolated Stock & Billing)'
+                        : '+ Ongeza Tawi Jingine la Duka (Stoo na Malipo Pekee)'}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Admin Dashboard / Developer Portal (Auto-visible for peterngecu001@gmail.com) */}
           {(isAdminMode || isPeterNgecu) && isPeterNgecu && (
@@ -2176,6 +2349,123 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           onUpdateShop(updatedShop);
         }}
       />
+
+      {/* Add New Shop Branch Modal (Multi-Shop Owners) */}
+      <Sheet
+        isOpen={isAddBranchModalOpen}
+        onClose={() => {
+          if (!isCreatingBranch) setIsAddBranchModalOpen(false);
+        }}
+        title={isEn ? 'Add New Shop Branch' : 'Ongeza Tawi Jipya la Duka'}
+        subtitle={
+          isEn
+            ? 'Each shop has its own isolated products, stock, sales reports & KES 30/day plan'
+            : 'Kila duka lina bidhaa zake, stoo yake, ripoti zake na ada ya KES 30/siku'
+        }
+      >
+        <div className="space-y-3.5 select-none pb-2">
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              {isEn ? 'New Shop / Branch Name *' : 'Jina la Duka / Tawi Jipya *'}
+            </label>
+            <input
+              type="text"
+              value={newBranchName}
+              onChange={(e) => setNewBranchName(e.target.value)}
+              placeholder={isEn ? 'e.g. SmartSort Shop — CBD Branch' : 'Mfano: Tawi la Mjini'}
+              className="w-full h-11 px-3 bg-white border border-slate-300 rounded-xl text-xs font-bold focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                {isEn ? 'Town / Area' : 'Mji / Eneo'}
+              </label>
+              <input
+                type="text"
+                value={newBranchTown}
+                onChange={(e) => setNewBranchTown(e.target.value)}
+                placeholder="e.g. Westlands"
+                className="w-full h-11 px-3 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                {isEn ? 'County' : 'Kaunti'}
+              </label>
+              <input
+                type="text"
+                value={newBranchCounty}
+                onChange={(e) => setNewBranchCounty(e.target.value)}
+                placeholder="e.g. Nairobi"
+                className="w-full h-11 px-3 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              {isEn ? 'M-Pesa Till / Paybill Number (for this shop)' : 'Namba ya Till / Paybill ya Duka Hili'}
+            </label>
+            <input
+              type="text"
+              value={newBranchTill}
+              onChange={(e) => setNewBranchTill(e.target.value)}
+              placeholder="e.g. 247247"
+              className="w-full h-11 px-3 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-900 space-y-1">
+            <div className="font-black">
+              ✓ {isEn ? '100% Isolated Shop Inventory & Reports' : 'Stoo na Ripoti Zilizotengwa Kikamilifu'}
+            </div>
+            <p className="text-emerald-800 leading-relaxed">
+              {isEn
+                ? 'Products, stock levels, sales, and credit entries created in this branch belong strictly to this branch. Subscription is billed per shop (KES 30/day).'
+                : 'Bidhaa, stoo, mauzo na madeni ya tawi hili yatabaki kwa tawi hili pekee. Malipo ya ada yanafanywa kwa kila duka.'}
+            </p>
+          </div>
+
+          <Button
+            variant="gradient"
+            size="hero"
+            fullWidth
+            disabled={isCreatingBranch || !newBranchName.trim()}
+            onClick={async () => {
+              if (!newBranchName.trim()) return;
+              setIsCreatingBranch(true);
+              try {
+                const created = await createNewShopBranch({
+                  shopName: newBranchName.trim(),
+                  town: newBranchTown.trim() || shop.town || 'Nairobi',
+                  county: newBranchCounty.trim() || shop.county || 'Nairobi',
+                  tillNumber: newBranchTill.trim() || shop.till_number || '247247',
+                });
+                const switched = await switchActiveShopBranch(created.shop_id);
+                onUpdateShop(switched);
+                const updatedBranches = await getOwnerBranches();
+                setOwnerBranches(updatedBranches);
+                setIsAddBranchModalOpen(false);
+                void syncEngine.triggerSync();
+              } finally {
+                setIsCreatingBranch(false);
+              }
+            }}
+            className="font-black"
+          >
+            {isCreatingBranch
+              ? isEn
+                ? 'Creating Shop Branch...'
+                : 'Inaunda Tawi...'
+              : isEn
+              ? 'Create & Switch to New Shop Branch'
+              : 'Unda na Fungua Tawi Jipya'}
+          </Button>
+        </div>
+      </Sheet>
 
       {/* Restock Loan Application Modal */}
       <Sheet

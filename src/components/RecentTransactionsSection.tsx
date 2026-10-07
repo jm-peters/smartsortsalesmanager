@@ -74,16 +74,18 @@ export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps>
     return map;
   }, [allUsers, staffAttendants, loggedInUser, shopMeta]);
 
-  // Fetch the last 5 sales (Owner sees all shop sales; Attendant sees their own sales)
+  // Fetch the last 5 sales for the active shop (Owner sees all shop sales; Attendant sees their own sales)
+  const activeShopId = shopMeta?.shop_id;
   const recentSales = useLiveQuery(
     async () => {
-      const all = await db.sales.orderBy('created_at').reverse().limit(30).toArray();
+      const all = await db.sales.orderBy('created_at').reverse().limit(60).toArray();
+      const shopScoped = all.filter((s) => !activeShopId || !s.shop_id || s.shop_id === activeShopId);
       const filtered = isOwner
-        ? all
-        : all.filter((s) => !loggedInUser || s.created_by === loggedInUser.id);
+        ? shopScoped
+        : shopScoped.filter((s) => !loggedInUser || s.created_by === loggedInUser.id);
       return filtered.slice(0, 5);
     },
-    [isOwner, loggedInUser?.id]
+    [isOwner, loggedInUser?.id, activeShopId]
   ) || [];
 
   // Fetch sale items corresponding to the last 5 sales
@@ -279,7 +281,9 @@ export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps>
                     <span>{formatTime(sale.created_at)}</span>
                     <span className="text-slate-300">•</span>
                     <span className="font-semibold text-slate-700">
-                      👤 {cashierInfo.name} <span className="text-[10px] opacity-75">({cashierInfo.roleLabel})</span>
+                      👤 {isEn ? 'Recorded by:' : 'Imerekodiwa na:'}{' '}
+                      <strong>{sale.recorded_by || cashierInfo.name}</strong>{' '}
+                      <span className="text-[10px] opacity-75">({cashierInfo.roleLabel})</span>
                     </span>
                   </div>
 

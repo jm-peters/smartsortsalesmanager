@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS public.sales (
     cash_session_id TEXT REFERENCES public.cash_sessions(id) ON DELETE SET NULL,
     device_id TEXT,
     created_by TEXT,
+    recorded_by TEXT,
     cashier_name TEXT,
     created_by_name TEXT,
     created_by_role TEXT,
@@ -226,9 +227,12 @@ CREATE TABLE IF NOT EXISTS public.sales (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS recorded_by TEXT;
 ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cashier_name TEXT;
 ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS created_by_name TEXT;
 ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS created_by_role TEXT;
+ALTER TABLE public.debts ADD COLUMN IF NOT EXISTS recorded_by TEXT;
+ALTER TABLE public.debts ADD COLUMN IF NOT EXISTS created_by TEXT;
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS loyalty_points INT DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS public.sale_items (

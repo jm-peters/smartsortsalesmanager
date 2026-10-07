@@ -145,13 +145,25 @@ export const StockScreen: React.FC<StockScreenProps> = ({
   const [isBulkAddModalOpen, setIsBulkAddModalOpen] = useState(false);
   const [bulkText, setBulkText] = useState('');
 
-  // Live query from Dexie
+  // Live query from Dexie scoped strictly to the active shop branch
+  const activeShop = useLiveQuery(() => getShopMeta(), []);
+  const activeShopId = activeShop?.shop_id;
+
   const products = useLiveQuery(
-    () => db.products.filter((p) => !p.deleted_at).toArray(),
-    []
+    () =>
+      db.products
+        .filter((p) => !p.deleted_at && (!activeShopId || !p.shop_id || p.shop_id === activeShopId))
+        .toArray(),
+    [activeShopId]
   ) || [];
 
-  const stocks = useLiveQuery(() => db.product_stock.toArray(), []) || [];
+  const stocks = useLiveQuery(
+    () =>
+      db.product_stock
+        .filter((s) => !activeShopId || !s.shop_id || s.shop_id === activeShopId)
+        .toArray(),
+    [activeShopId]
+  ) || [];
   const stockMap = useMemo(() => {
     const map = new Map<string, number>();
     stocks.forEach((s) => map.set(s.product_id, s.qty));

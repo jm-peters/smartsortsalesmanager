@@ -17,6 +17,8 @@ import {
   getShopMeta,
   saveShopMeta,
   saveShopUser,
+  getOwnerBranches,
+  switchActiveShopBranch,
   type ShopUser,
   type UserRole,
   type Shop,
@@ -60,6 +62,13 @@ export default function App() {
   const [activeStepModal, setActiveStepModal] = useState<StepType | null>(null);
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
   const [isAdminPortalOpen, setIsAdminPortalOpen] = useState(false);
+  const [ownerBranches, setOwnerBranches] = useState<Shop[]>([]);
+
+  useEffect(() => {
+    if (user && userRole === 'owner') {
+      getOwnerBranches().then(setOwnerBranches).catch(() => {});
+    }
+  }, [user, userRole, shop?.shop_id, currentTab]);
 
   const t = translations[language];
 
@@ -232,8 +241,34 @@ export default function App() {
             </button>
           </div>
 
-          {/* Right: Language Switcher, Offline Indicator, Settings Gear */}
+          {/* Right: Branch Switcher (for multi-shop owners), Language Switcher, Offline Indicator, Settings Gear */}
           <div className="flex items-center gap-1.5 shrink-0">
+            {userRole === 'owner' && ownerBranches.length > 1 && (
+              <div className="relative">
+                <select
+                  aria-label="Select Shop Branch"
+                  value={shop?.shop_id || ''}
+                  onChange={async (e) => {
+                    const nextShopId = e.target.value;
+                    if (nextShopId && nextShopId !== shop?.shop_id) {
+                      const switched = await switchActiveShopBranch(nextShopId);
+                      setShop(switched);
+                      const updatedBranches = await getOwnerBranches();
+                      setOwnerBranches(updatedBranches);
+                      void syncEngine.triggerSync();
+                    }
+                  }}
+                  className="px-2 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-[11px] font-black text-emerald-900 border border-emerald-300 shadow-2xs focus:outline-none cursor-pointer max-w-[125px] truncate"
+                >
+                  {ownerBranches.map((b) => (
+                    <option key={b.shop_id} value={b.shop_id}>
+                      {b.avatar_emoji || '🏪'} {b.shop_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {/* Language Switcher Option at the Top (English default, toggle to Kiswahili) */}
             <button
               type="button"

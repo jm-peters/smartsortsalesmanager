@@ -86,6 +86,7 @@ export interface SaleHeader {
   change_seq?: number;
   device_id: string;
   created_by: string;
+  recorded_by?: string;
   cashier_name?: string;
   created_by_name?: string;
   created_by_role?: string;
@@ -139,6 +140,8 @@ export interface Debt {
   updated_at: string;
   change_seq?: number;
   device_id: string;
+  created_by?: string;
+  recorded_by?: string;
 }
 
 export interface DebtPayment {
@@ -598,6 +601,17 @@ export async function saveShopMeta(shopInfo: Partial<ShopMeta>): Promise<ShopMet
   const current = await getShopMeta();
   const updated = { ...current, ...shopInfo };
   await db.meta.put({ key: 'shop_info', value: updated });
+  try {
+    const branchesMeta = await db.meta.get('owner_branches');
+    if (Array.isArray(branchesMeta?.value)) {
+      const nextBranches = branchesMeta.value.map((b: ShopMeta) =>
+        b.shop_id === updated.shop_id ? { ...b, ...updated } : b
+      );
+      await db.meta.put({ key: 'owner_branches', value: nextBranches });
+    }
+  } catch {
+    // ignore
+  }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('smartsort_shop_meta_updated', { detail: updated }));
   }
@@ -1293,6 +1307,11 @@ export async function recordSale(saleData: {
       : (matchedAtt?.name || activeUser?.username || 'Attendant')
     : rawCashierName;
 
+  if (debtRecord) {
+    debtRecord.created_by = creatorId;
+    debtRecord.recorded_by = cashierName;
+  }
+
   const saleHeader: SaleHeader = {
     id: saleId,
     shop_id: shop.shop_id,
@@ -1310,6 +1329,7 @@ export async function recordSale(saleData: {
     updated_at: now,
     device_id: deviceId,
     created_by: creatorId,
+    recorded_by: cashierName,
     cashier_name: cashierName,
     created_by_name: cashierName,
     created_by_role: creatorRole,
@@ -2293,8 +2313,8 @@ export function resolveSaleCashierDisplay(
   shop?: ShopMeta | null,
   isEn = true
 ): { name: string; roleLabel: string; isAttendant: boolean } {
-  // 1. Check explicit fields on sale
-  let rawName = (sale.cashier_name || sale.created_by_name || '').trim();
+  // 1. Check explicit fields on sale (including recorded_by)
+  let rawName = (sale.recorded_by || sale.cashier_name || sale.created_by_name || '').trim();
   let rawRole = (sale.created_by_role || '').trim();
 
   if (rawName.toLowerCase() === 'smartsort user' || rawName.toLowerCase() === 'cashier') {
@@ -2356,6 +2376,152 @@ export function resolveSaleCashierDisplay(
     roleLabel,
     isAttendant,
   };
+}
+
+/**
+ * Multi-Branch / Multi-Shop Management for Owners with more than 1 shop.
+ * Each branch has its own isolated shop_id, products, stock, customers, debts, sales,
+ * and its own independent subscription payment status (KES 30/day per shop).
+ */
+export async function getOwnerBranches(): Promise<ShopMeta[]> {
+  const current = await getShopMeta();
+  const metaEntry = await db.meta.get('owner_branches');
+  let list: ShopMeta[] = Array.isArray(metaEntry?.value) ? metaEntry.value : [];
+
+  // Ensure current active shop is always present and up-to-date in the branches list
+  const idx = list.findIndex((b) => b.shop_id === current.shop_id);
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], ...current };
+  } else {
+    list = [current, ...list];
+  }
+
+  await db.meta.put({ key: 'owner_branches', value: list });
+  return list;
+}
+
+export async function createNewShopBranch(params: {
+  shopName: string;
+  town?: string;
+  county?: string;
+  tillNumber?: string;
+  avatarEmoji?: string;
+}): Promise<ShopMeta> {
+  const current = await getShopMeta();
+  const branches = await getOwnerBranches();
+  const now = serverNow();
+  const newShopId = crypto.randomUUID();
+
+  const newBranch: ShopMeta = {
+    shop_id: newShopId,
+    shop_name: params.shopName.trim(),
+    owner_name: current.owner_name,
+    phone: current.phone,
+    till_number: (params.tillNumber || current.till_number || '247247').trim(),
+    paybill_number: current.paybill_number || '247247',
+    account_number: current.account_number || '253499',
+    include_credit_in_gross_sales: true,
+    role: 'owner',
+    user_id: current.user_id,
+    avatar_emoji: params.avatarEmoji || '🏪',
+    tagline: `${params.shopName.trim()} — ${params.town || current.town || 'Branch'}`,
+    contact_email: current.contact_email,
+    alt_phone: current.alt_phone,
+    county: params.county || current.county || 'Nairobi',
+    sub_county: current.sub_county || 'Westlands',
+    town: params.town || current.town || 'Nairobi',
+    landmark: null,
+    default_credit_limit: current.default_credit_limit || toKES(3000),
+    receipt_footer: `Thank you for shopping at ${params.shopName.trim()}!`,
+    business_cutoff_hour: 22,
+    plan_code: 'daily_30',
+    plan_name: 'Daily Access Plan (KES 30/day)',
+    plan_amount_kes: 30,
+    plan_status: 'active',
+    // New branch gets a 24h starter window; subscription is paid per shop
+    subscription_paid_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    preferred_payment_method: 'mpesa',
+    plan_acknowledged: true,
+    created_at: now,
+  };
+
+  const updatedBranches = [...branches.filter((b) => b.shop_id !== newShopId), newBranch];
+  await db.meta.put({ key: 'owner_branches', value: updatedBranches });
+
+  // Sync new shop branch to Supabase shops table
+  void syncWriteThrough({
+    id: newShopId,
+    table: 'shops',
+    op: 'insert',
+    payload: {
+      id: newShopId,
+      shop_name: newBranch.shop_name,
+      owner_name: newBranch.owner_name,
+      phone: newBranch.phone,
+      till_number: newBranch.till_number,
+      avatar_emoji: newBranch.avatar_emoji,
+      tagline: newBranch.tagline,
+      contact_email: newBranch.contact_email,
+      county: newBranch.county,
+      town: newBranch.town,
+      default_credit_limit: newBranch.default_credit_limit,
+      receipt_footer: newBranch.receipt_footer,
+      plan_code: newBranch.plan_code,
+      plan_name: newBranch.plan_name,
+      plan_amount_kes: newBranch.plan_amount_kes,
+      plan_status: newBranch.plan_status,
+      subscription_paid_until: newBranch.subscription_paid_until,
+      preferred_payment_method: newBranch.preferred_payment_method,
+      plan_acknowledged: true,
+      created_at: now,
+      updated_at: now,
+    },
+    attempts: 0,
+    next_attempt_at: now,
+  });
+
+  return newBranch;
+}
+
+export async function switchActiveShopBranch(targetShopId: string): Promise<ShopMeta> {
+  const current = await getShopMeta();
+  const branches = await getOwnerBranches();
+
+  // Save current shop state + current shop's staff attendants into branch-scoped meta
+  const currentAttendants = await getStaffAttendants();
+  await db.meta.put({ key: `staff_attendants_${current.shop_id}`, value: currentAttendants });
+
+  const updatedBranches = branches.map((b) => (b.shop_id === current.shop_id ? { ...b, ...current } : b));
+  const target = updatedBranches.find((b) => b.shop_id === targetShopId);
+  if (!target) {
+    throw new Error('Target shop branch not found');
+  }
+
+  await db.meta.put({ key: 'owner_branches', value: updatedBranches });
+  await db.meta.put({ key: 'shop_info', value: target });
+
+  // Load target shop's staff attendants
+  const targetAttMeta = await db.meta.get(`staff_attendants_${targetShopId}`);
+  await db.meta.put({
+    key: 'staff_attendants',
+    value: Array.isArray(targetAttMeta?.value) ? targetAttMeta.value : [],
+  });
+
+  // Reset sync_state cursors so syncEngine pulls all data for the newly selected branch
+  await db.sync_state.clear();
+
+  // Update user_info shop_id to match active branch
+  const user = await getShopUser();
+  if (user) {
+    const updatedUser = { ...user, shop_id: target.shop_id };
+    await db.meta.put({ key: 'user_info', value: updatedUser });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('smartsort_shop_meta_updated', { detail: target }));
+  }
+
+  return target;
 }
 
 /**
