@@ -537,7 +537,6 @@ export async function getShopMeta(): Promise<ShopMeta> {
     };
   }
 
-  await db.meta.put({ key: 'shop_info', value: defaultMeta });
   return defaultMeta;
 }
 
@@ -2386,7 +2385,7 @@ export function resolveSaleCashierDisplay(
 export async function getOwnerBranches(): Promise<ShopMeta[]> {
   const current = await getShopMeta();
   const metaEntry = await db.meta.get('owner_branches');
-  let list: ShopMeta[] = Array.isArray(metaEntry?.value) ? metaEntry.value : [];
+  let list: ShopMeta[] = Array.isArray(metaEntry?.value) ? [...metaEntry.value] : [];
 
   // Ensure current active shop is always present and up-to-date in the branches list
   const idx = list.findIndex((b) => b.shop_id === current.shop_id);
@@ -2396,7 +2395,6 @@ export async function getOwnerBranches(): Promise<ShopMeta[]> {
     list = [current, ...list];
   }
 
-  await db.meta.put({ key: 'owner_branches', value: list });
   return list;
 }
 
