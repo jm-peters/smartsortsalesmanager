@@ -34,6 +34,7 @@ import {
   saveShopUser,
   getStaffAttendants,
   removeStaffAttendant,
+  deduplicateStaffAttendants,
   getOwnerBranches,
   createNewShopBranch,
   switchActiveShopBranch,
@@ -258,7 +259,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         setProductCount(prods);
 
         const attendants = await getStaffAttendants();
-        setStaffList(attendants);
+        setStaffList(deduplicateStaffAttendants(attendants));
 
         const branches = await getOwnerBranches();
         setOwnerBranches(branches);

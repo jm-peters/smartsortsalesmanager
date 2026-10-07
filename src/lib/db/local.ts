@@ -2071,32 +2071,144 @@ export interface StaffAttendant {
   created_at: string;
 }
 
+/**
+ * Strict Deduplication of Staff Attendants
+ * Prevents identical attendants from appearing multiple times across local IndexedDB and cloud sync.
+ * Matches by ID, email, normalized phone number, or exact attendant name.
+ */
+export function deduplicateStaffAttendants(list: StaffAttendant[]): StaffAttendant[] {
+  if (!Array.isArray(list) || list.length === 0) return [];
+  const result: StaffAttendant[] = [];
+
+  for (const raw of list) {
+    if (!raw) continue;
+    const cleanEmail = (raw.email || (raw.phone && raw.phone.includes('@') ? raw.phone : '')).trim().toLowerCase();
+    const cleanPhone = (raw.phone || '').trim().replace(/\D/g, '');
+    const cleanName = (raw.name || '').trim().toLowerCase();
+    const rawId = (raw.id || '').trim();
+
+    // Skip placeholder / invalid empty entries
+    if (!cleanName && !cleanEmail && !cleanPhone) continue;
+
+    // Check if matching entry already exists in result accumulator
+    const existingIndex = result.findIndex((item) => {
+      if (rawId && item.id && rawId === item.id) return true;
+      if (cleanEmail && item.email && item.email.trim().toLowerCase() === cleanEmail) return true;
+      if (cleanEmail && item.phone && item.phone.trim().toLowerCase() === cleanEmail) return true;
+      if (cleanPhone && cleanPhone.length >= 7 && item.phone) {
+        const itemPhoneDigits = item.phone.replace(/\D/g, '');
+        if (itemPhoneDigits.endsWith(cleanPhone) || cleanPhone.endsWith(itemPhoneDigits)) return true;
+      }
+      if (cleanName && item.name && item.name.trim().toLowerCase() === cleanName) return true;
+      return false;
+    });
+
+    if (existingIndex >= 0) {
+      // Merge records: prefer active status, real UUID, and fuller fields
+      const existing = result[existingIndex];
+      const preferredStatus =
+        existing.status === 'active' || raw.status === 'active' ? 'active' : (raw.status || existing.status || 'active');
+      const preferredPin =
+        raw.pin_hash && raw.pin_hash !== 'pending' && raw.pin_hash !== 'synced'
+          ? raw.pin_hash
+          : existing.pin_hash && existing.pin_hash !== 'pending' && existing.pin_hash !== 'synced'
+          ? existing.pin_hash
+          : (raw.pin_hash || existing.pin_hash || 'synced');
+
+      const merged: StaffAttendant = {
+        id: (existing.id && !existing.id.startsWith('temp-')) ? existing.id : (raw.id || existing.id || crypto.randomUUID()),
+        name: raw.name && raw.name !== 'Attendant' ? raw.name : existing.name,
+        email: cleanEmail || existing.email || undefined,
+        phone: raw.phone || existing.phone,
+        role: 'attendant',
+        pin_hash: preferredPin,
+        status: preferredStatus,
+        created_at: existing.created_at || raw.created_at || serverNow(),
+      };
+      result[existingIndex] = merged;
+    } else {
+      result.push({
+        id: raw.id || crypto.randomUUID(),
+        name: raw.name || 'Attendant',
+        phone: raw.phone || '',
+        email: cleanEmail || undefined,
+        role: 'attendant',
+        pin_hash: raw.pin_hash || 'pending',
+        status: raw.status || 'active',
+        created_at: raw.created_at || serverNow(),
+      });
+    }
+  }
+
+  return result;
+}
+
 export async function getStaffAttendants(): Promise<StaffAttendant[]> {
   const meta = await db.meta.get('staff_attendants');
-  return meta?.value || [];
+  const rawList = Array.isArray(meta?.value) ? meta.value : [];
+  const deduplicated = deduplicateStaffAttendants(rawList);
+  // Self-heal storage if duplicates were found
+  if (deduplicated.length !== rawList.length) {
+    await db.meta.put({ key: 'staff_attendants', value: deduplicated });
+  }
+  return deduplicated;
 }
 
 export async function addStaffAttendant(
   attendant: Omit<StaffAttendant, 'id' | 'created_at'>
 ): Promise<StaffAttendant> {
   const list = await getStaffAttendants();
-  if (list.length >= 5) {
-    throw new Error('Maximum limit reached: A shop can have a maximum of 5 attendants.');
+  const shop = await getShopMeta();
+  const now = serverNow();
+
+  const cleanEmail = (attendant.email || (attendant.phone && attendant.phone.includes('@') ? attendant.phone : '')).trim().toLowerCase();
+  const cleanPhoneDigits = (attendant.phone || '').trim().replace(/\D/g, '');
+  const cleanName = attendant.name.trim().toLowerCase();
+
+  // Find if already exists in current attendants list
+  const existingIdx = list.findIndex((a) => {
+    if (cleanEmail && a.email && a.email.trim().toLowerCase() === cleanEmail) return true;
+    if (cleanEmail && a.phone && a.phone.trim().toLowerCase() === cleanEmail) return true;
+    if (cleanPhoneDigits && cleanPhoneDigits.length >= 7 && a.phone) {
+      const aPhoneDigits = a.phone.replace(/\D/g, '');
+      if (aPhoneDigits.endsWith(cleanPhoneDigits) || cleanPhoneDigits.endsWith(aPhoneDigits)) return true;
+    }
+    if (cleanName && a.name && a.name.trim().toLowerCase() === cleanName) return true;
+    return false;
+  });
+
+  let created: StaffAttendant;
+  let updatedList: StaffAttendant[];
+
+  if (existingIdx >= 0) {
+    const existing = list[existingIdx];
+    created = {
+      ...existing,
+      name: attendant.name.trim() || existing.name,
+      phone: attendant.phone || existing.phone,
+      email: cleanEmail || existing.email,
+      status: attendant.status || existing.status || 'active',
+      pin_hash: attendant.pin_hash && attendant.pin_hash !== 'pending' ? attendant.pin_hash : existing.pin_hash,
+    };
+    updatedList = list.map((a, i) => (i === existingIdx ? created : a));
+  } else {
+    if (list.length >= 5) {
+      throw new Error('Maximum limit reached: A shop can have a maximum of 5 attendants.');
+    }
+    created = {
+      ...attendant,
+      id: crypto.randomUUID(),
+      email: cleanEmail || undefined,
+      status: attendant.status || 'active',
+      created_at: now,
+    };
+    updatedList = [...list, created];
   }
 
-  const shop = await getShopMeta();
-  const created: StaffAttendant = {
-    ...attendant,
-    id: crypto.randomUUID(),
-    status: attendant.status || 'active',
-    created_at: serverNow(),
-  };
-
-  const updatedList = [...list, created];
-  await db.meta.put({ key: 'staff_attendants', value: updatedList });
+  const deduplicated = deduplicateStaffAttendants(updatedList);
+  await db.meta.put({ key: 'staff_attendants', value: deduplicated });
 
   // Also store in local db.users and sync to remote users table so all devices resolve attendant name by ID
-  const now = created.created_at;
   const attendantUserRecord: ShopUser = {
     id: created.id,
     shop_id: shop.shop_id,
@@ -2112,6 +2224,7 @@ export async function addStaffAttendant(
     created_at: now,
     updated_at: now,
   };
+
   try {
     await db.users.put(attendantUserRecord);
     void syncWriteThrough({
@@ -2158,8 +2271,23 @@ export async function addStaffAttendant(
 
 export async function removeStaffAttendant(id: string, emailOrPhone?: string): Promise<void> {
   const list = await getStaffAttendants();
-  const filtered = list.filter((a) => a.id !== id && (emailOrPhone ? a.phone.toLowerCase() !== emailOrPhone.toLowerCase() && a.email?.toLowerCase() !== emailOrPhone.toLowerCase() : true));
-  await db.meta.put({ key: 'staff_attendants', value: filtered });
+  const cleanEmailOrPhone = (emailOrPhone || '').trim().toLowerCase();
+  const cleanPhoneDigits = (emailOrPhone || '').replace(/\D/g, '');
+
+  const filtered = list.filter((a) => {
+    if (a.id === id) return false;
+    if (cleanEmailOrPhone) {
+      if (a.email && a.email.trim().toLowerCase() === cleanEmailOrPhone) return false;
+      if (a.phone && a.phone.trim().toLowerCase() === cleanEmailOrPhone) return false;
+    }
+    if (cleanPhoneDigits && cleanPhoneDigits.length >= 7) {
+      if (a.phone && a.phone.replace(/\D/g, '').endsWith(cleanPhoneDigits)) return false;
+    }
+    return true;
+  });
+
+  const deduplicated = deduplicateStaffAttendants(filtered);
+  await db.meta.put({ key: 'staff_attendants', value: deduplicated });
 
   // Delete from Supabase REST staff_attendants, users & revoke credentials
   const url = (import.meta as any).env?.VITE_SUPABASE_URL || (import.meta as any).env?.SUPABASE_URL || '';

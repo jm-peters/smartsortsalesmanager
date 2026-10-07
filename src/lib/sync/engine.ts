@@ -15,6 +15,7 @@ import {
   setClockSkew,
   registerDirectSyncDispatcher,
   recalculateStockFromLedger,
+  deduplicateStaffAttendants,
   type OutboxEntry,
 } from '../db/local';
 import type { RemoteAdapter } from '../remote/types';
@@ -928,28 +929,21 @@ class SyncEngine {
         if (attPull.rows && attPull.rows.length > 0) {
           const existingMeta = await db.meta.get('staff_attendants');
           const localAtts: any[] = Array.isArray(existingMeta?.value) ? existingMeta.value : [];
-          const byId = new Map<string, any>();
-          for (const a of localAtts) {
-            if (a?.id) byId.set(a.id, a);
-          }
-          for (const ra of attPull.rows as any[]) {
-            if (ra?.id) {
-              byId.set(ra.id, {
-                ...byId.get(ra.id),
-                id: ra.id,
-                name: ra.name || 'Attendant',
-                phone: ra.phone || ra.email || '',
-                email: ra.email || ra.phone || '',
-                role: 'attendant',
-                status: ra.status || 'active',
-                pin_hash: byId.get(ra.id)?.pin_hash || 'synced',
-                created_at: ra.created_at || new Date().toISOString(),
-              });
-            }
-          }
+          const remoteAtts: any[] = attPull.rows.map((ra: any) => ({
+            id: ra.id,
+            name: ra.name || 'Attendant',
+            phone: ra.phone || ra.email || '',
+            email: ra.email || ra.phone || '',
+            role: 'attendant',
+            status: ra.status || 'active',
+            pin_hash: 'synced',
+            created_at: ra.created_at || new Date().toISOString(),
+          }));
+
+          const mergedDeduplicated = deduplicateStaffAttendants([...localAtts, ...remoteAtts]);
           await db.meta.put({
             key: 'staff_attendants',
-            value: Array.from(byId.values()),
+            value: mergedDeduplicated,
           });
         }
       } catch {

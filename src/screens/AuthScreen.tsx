@@ -23,7 +23,9 @@ import {
   getShopMeta,
   saveShopMeta,
   clearDatabaseForFreshStart,
+  clearAllProducts,
   getStaffAttendants,
+  deduplicateStaffAttendants,
   type ShopUser,
   type Shop,
   type OnboardingStep,
@@ -282,15 +284,15 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       // Write user to local metadata DB
       await db.meta.put({ key: 'user_info', value: newAttendantUser });
 
-      // Save in attendants list as active
+      // Save in attendants list as active with strict deduplication
       const existingAttendants = await getStaffAttendants();
       const updatedList = existingAttendants.map((att: StaffAttendant) => 
-        att.phone.toLowerCase() === inviteEmail.toLowerCase() || att.email?.toLowerCase() === inviteEmail.toLowerCase()
-          ? { ...att, id: attendantId, email: inviteEmail, status: 'active' as const, pin_hash: 'needs_setup' }
+        att.phone.toLowerCase() === inviteEmail.toLowerCase() || att.email?.toLowerCase() === inviteEmail.toLowerCase() || att.id === attendantId
+          ? { ...att, id: attendantId, name: inviteName, email: inviteEmail, status: 'active' as const, pin_hash: 'needs_setup' }
           : att
       );
       // Ensure it is added if not present
-      if (!updatedList.some((att: StaffAttendant) => att.phone.toLowerCase() === inviteEmail.toLowerCase() || att.email?.toLowerCase() === inviteEmail.toLowerCase())) {
+      if (!updatedList.some((att: StaffAttendant) => att.phone.toLowerCase() === inviteEmail.toLowerCase() || att.email?.toLowerCase() === inviteEmail.toLowerCase() || att.id === attendantId)) {
         updatedList.push({
           id: attendantId,
           name: inviteName,
@@ -302,7 +304,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           created_at: now,
         });
       }
-      await db.meta.put({ key: 'staff_attendants', value: updatedList });
+      const deduplicatedAttendants = deduplicateStaffAttendants(updatedList);
+      await db.meta.put({ key: 'staff_attendants', value: deduplicatedAttendants });
+
+      // Clear sync cursors so that the attendant's device does a 100% full pull of the shop's catalog and inventory
+      await db.sync_state.clear();
 
       // Sync updated attendant to Supabase REST tables
       if (url && anonKey) {
@@ -1770,7 +1776,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
     }
 
-    onAuthenticated(finalUser, tempUserForPin.shop);
+    setIsSettingPin(false);
+    await handleCompleteOnlineLogin(finalUser, tempUserForPin.shop);
   };
 
   // Render Attendant Invite Registration Prompt
@@ -1931,7 +1938,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   setNewDevicePin('');
                   setIsSettingPin(true);
                 } else {
-                  onAuthenticated(tempUserForPin.user, tempUserForPin.shop);
+                  await handleCompleteOnlineLogin(tempUserForPin.user, tempUserForPin.shop);
                 }
               }}
               className="w-full min-h-[44px] py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"

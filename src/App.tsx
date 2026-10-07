@@ -171,6 +171,7 @@ export default function App() {
           setUser(authenticatedUser);
           setShop(authenticatedShop);
           setUserRole(authenticatedUser.role);
+          void syncEngine.triggerSync();
         }}
         language={language}
         onToggleLanguage={handleToggleLanguage}
