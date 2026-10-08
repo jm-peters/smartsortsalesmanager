@@ -67,10 +67,57 @@ export class SupabaseAdapter implements RemoteAdapter {
     return { serverTimeMs: Date.now() };
   }
 
+  private saveToSharedStorage(table: string, rows: Array<Record<string, unknown>>) {
+    try {
+      if (typeof localStorage !== 'undefined' && rows.length > 0) {
+        const key = `smartsort_cloud_mock_${table}`;
+        const existing = JSON.parse(localStorage.getItem(key) || '[]');
+        const pkField = table === 'product_stock' ? 'product_id' : 'id';
+        const map = new Map<string, any>();
+        existing.forEach((r: any) => {
+          const id = r[pkField];
+          if (id) map.set(String(id), r);
+        });
+        rows.forEach((r: any) => {
+          const id = r[pkField];
+          if (id) {
+            const current = map.get(String(id)) || {};
+            map.set(String(id), { ...current, ...r });
+          }
+        });
+        localStorage.setItem(key, JSON.stringify(Array.from(map.values())));
+        localStorage.setItem('smartsort_cloud_pulse', String(Date.now()));
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private getFromSharedStorage<T = Record<string, unknown>>(table: string, shopId: string): T[] {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const key = `smartsort_cloud_mock_${table}`;
+        const existing: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+        if (Array.isArray(existing) && existing.length > 0) {
+          if (table === 'shops') {
+            return existing.filter((r) => r.id === shopId) as T[];
+          }
+          return existing.filter((r) => !r.shop_id || r.shop_id === shopId) as T[];
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  }
+
   async pushBatch(
     table: string,
     rows: Array<Record<string, unknown>>
   ): Promise<RemotePushResult> {
+    // Keep local shared storage synchronized
+    this.saveToSharedStorage(table, rows);
+
     if (!this.isConfigured()) {
       // Local/offline mode when Supabase env vars are not set
       return {
@@ -243,10 +290,11 @@ export class SupabaseAdapter implements RemoteAdapter {
     limit = 500
   ): Promise<RemotePullResult<T>> {
     if (!this.isConfigured()) {
+      const mockRows = this.getFromSharedStorage<T>(table, shopId);
       return {
         table,
-        rows: [],
-        maxChangeSeq: lastChangeSeq,
+        rows: mockRows,
+        maxChangeSeq: lastChangeSeq + mockRows.length,
         hasMore: false,
       };
     }

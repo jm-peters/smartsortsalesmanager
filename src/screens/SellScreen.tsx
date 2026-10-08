@@ -22,7 +22,9 @@ import {
   Scale,
   Camera,
   Barcode,
+  CloudUpload,
 } from 'lucide-react';
+import { syncEngine } from '../lib/sync/engine';
 import {
   db,
   recordSale,
@@ -162,6 +164,37 @@ export const SellScreen: React.FC<SellScreenProps> = ({
   const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
   const [unrecognizedBarcode, setUnrecognizedBarcode] = useState<string | null>(null);
   const [scanSuccessToast, setScanSuccessToast] = useState<string | null>(null);
+
+  // Attendant Quick Push State & Handler
+  const [isPushingSales, setIsPushingSales] = useState(false);
+  const [pushToast, setPushToast] = useState<{ message: string; success: boolean } | null>(null);
+
+  const handleAttendantQuickPush = async () => {
+    if (isPushingSales) return;
+    setIsPushingSales(true);
+    try {
+      const res = await syncEngine.pushSalesToOwner();
+      setPushToast({
+        message:
+          language === 'en'
+            ? `✓ ${res.pushedSalesCount} sales pushed to owner successfully!`
+            : `✓ Mauzo ${res.pushedSalesCount} yamesukumwa kwa mwenye duka!`,
+        success: true,
+      });
+      setTimeout(() => setPushToast(null), 4000);
+    } catch (err: any) {
+      setPushToast({
+        message:
+          language === 'en'
+            ? 'Failed to push sales to owner'
+            : 'Kushindwa kusukuma mauzo kwa mwenye duka',
+        success: false,
+      });
+      setTimeout(() => setPushToast(null), 4000);
+    } finally {
+      setIsPushingSales(false);
+    }
+  };
 
   const addProductToCart = (product: Product) => {
     setCart((prev) => {
@@ -1055,6 +1088,30 @@ export const SellScreen: React.FC<SellScreenProps> = ({
             </div>
           </div>
 
+          {/* Attendant Quick Push Button to send sales to owner */}
+          {userRole === 'attendant' && (
+            <button
+              type="button"
+              onClick={handleAttendantQuickPush}
+              disabled={isPushingSales}
+              className="h-11 px-2.5 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-900 active:scale-95 transition flex items-center gap-1.5 text-xs font-black shrink-0 cursor-pointer shadow-2xs"
+              title={isEn ? "Push sales to owner's dashboard" : 'Sukuma mauzo kwa mwenye duka'}
+            >
+              <CloudUpload
+                className={`w-4 h-4 text-blue-700 ${isPushingSales ? 'animate-bounce' : ''}`}
+              />
+              <span className="hidden sm:inline">
+                {isPushingSales
+                  ? isEn
+                    ? 'Pushing...'
+                    : 'Inasukuma...'
+                  : isEn
+                  ? 'Push to Owner'
+                  : 'Sukuma Mauzo'}
+              </span>
+            </button>
+          )}
+
           {/* Quick Action (+) Button for Expenses, Products, Debts (§Feature 7) */}
           <button
             type="button"
@@ -1067,6 +1124,26 @@ export const SellScreen: React.FC<SellScreenProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Attendant Quick Push Toast Notification */}
+      {pushToast && (
+        <div
+          className={`mx-4 mt-2 p-2.5 rounded-xl border flex items-center justify-between text-xs font-bold shadow-xs animate-in fade-in slide-in-from-top-1 ${
+            pushToast.success
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+              : 'bg-rose-50 border-rose-300 text-rose-900'
+          }`}
+        >
+          <span>{pushToast.message}</span>
+          <button
+            type="button"
+            onClick={() => setPushToast(null)}
+            className="p-1 text-slate-400 hover:text-slate-600"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <div className="p-4 flex-1">
         {/* Held Carts Strip (Feature 4 - Shikilia) */}

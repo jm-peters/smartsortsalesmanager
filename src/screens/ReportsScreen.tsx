@@ -25,6 +25,9 @@ import {
   Info,
   FileText,
   FileSpreadsheet,
+  CloudUpload,
+  RefreshCw,
+  Users,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import {
@@ -129,6 +132,131 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const loggedInUser = useLiveQuery(() => getShopUser(), []);
   const allUsers = useLiveQuery(() => db.users.toArray(), []) || [];
   const staffAttendants = useLiveQuery(() => getStaffAttendants(), []) || [];
+  const pendingOutboxCount = useLiveQuery(() => db.outbox.count(), []) || 0;
+
+  // Attendant & Owner Cross-Role Reports Synchronization State
+  const [isSyncingAttendantSales, setIsSyncingAttendantSales] = useState(false);
+  const [syncToast, setSyncToast] = useState<{
+    type: 'success' | 'error' | 'info';
+    message: string;
+    details?: string;
+  } | null>(null);
+
+  const [lastReconciledAt, setLastReconciledAt] = useState<string | null>(() => {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('smartsort_last_attendant_reconciled');
+    }
+    return null;
+  });
+
+  const [lastPushedToOwnerAt, setLastPushedToOwnerAt] = useState<string | null>(() => {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('smartsort_last_pushed_to_owner');
+    }
+    return null;
+  });
+
+  // Auto-dismiss sync toast after 8 seconds
+  useEffect(() => {
+    if (!syncToast) return;
+    const timer = setTimeout(() => {
+      setSyncToast(null);
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [syncToast]);
+
+  // Listen for broadcast sync notifications
+  useEffect(() => {
+    const handleSyncUpdate = () => {
+      // Re-trigger background sync pass if online
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        void syncEngine.triggerSync();
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('smartsort_reports_updated', handleSyncUpdate);
+      return () => window.removeEventListener('smartsort_reports_updated', handleSyncUpdate);
+    }
+  }, []);
+
+  // Owner action: Pull all attendant sales reports & reconcile discrepancies
+  const handlePullAttendantSales = async () => {
+    if (isSyncingAttendantSales) return;
+    setIsSyncingAttendantSales(true);
+    try {
+      const res = await syncEngine.reconcileAllAttendantSales(shopMeta?.shop_id);
+      const nowStr = new Date().toLocaleTimeString(isEn ? 'en-KE' : 'sw-KE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      setLastReconciledAt(nowStr);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('smartsort_last_attendant_reconciled', nowStr);
+      }
+
+      const attendantSummary =
+        res.attendantNames.length > 0
+          ? `${res.attendantNames.join(', ')} (${res.attendantSalesCount} ${isEn ? 'sales' : 'mauzo'} · ${formatKES(res.attendantSalesTotal)})`
+          : isEn
+          ? 'No attendant sales found'
+          : 'Hakuna mauzo ya wahudumu yaliyopatikana';
+
+      setSyncToast({
+        type: 'success',
+        message: isEn
+          ? '✓ Attendant Sales Reports Reconciled Successfully!'
+          : '✓ Ripoti za Wahudumu Zimevutwa na Kulinganishwa!',
+        details: isEn
+          ? `Pulled ${res.totalSales} total shop sales (${res.totalItems} line items). Attendants: ${attendantSummary}. The owner report is now 100% matched with all attendants.`
+          : `Yamepatikana jumla ya mauzo ${res.totalSales} (${res.totalItems} bidhaa). Wahudumu: ${attendantSummary}. Ripoti ya mwenye duka sasa inalingana 100% na wahudumu.`,
+      });
+    } catch (err: any) {
+      setSyncToast({
+        type: 'error',
+        message: isEn ? 'Failed to reconcile attendant sales' : 'Kushindwa kuvuta mauzo ya wahudumu',
+        details: err?.message || 'Network error occurred during synchronization',
+      });
+    } finally {
+      setIsSyncingAttendantSales(false);
+    }
+  };
+
+  // Attendant action: Push all sales to the owner's dashboard
+  const handlePushSalesToOwner = async () => {
+    if (isSyncingAttendantSales) return;
+    setIsSyncingAttendantSales(true);
+    try {
+      const res = await syncEngine.pushSalesToOwner(loggedInUser?.id);
+      const nowStr = new Date().toLocaleTimeString(isEn ? 'en-KE' : 'sw-KE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      setLastPushedToOwnerAt(nowStr);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('smartsort_last_pushed_to_owner', nowStr);
+      }
+
+      setSyncToast({
+        type: 'success',
+        message: isEn
+          ? '✓ All Sales Successfully Pushed to Owner!'
+          : '✓ Mauzo Yote Yamesukumwa kwa Mwenye Duka!',
+        details: isEn
+          ? `Uploaded ${res.pushedSalesCount} sales, ${res.pushedItemsCount} items, and ${res.pushedDebtsCount} credit records. The owner's dashboard has been updated to match your report with zero discrepancies.`
+          : `Mauzo ${res.pushedSalesCount}, bidhaa ${res.pushedItemsCount}, na madeni ${res.pushedDebtsCount} yametumwa. Dashibodi ya mwenye duka sasa inalingana na ripoti yako bila hitilafu.`,
+      });
+    } catch (err: any) {
+      setSyncToast({
+        type: 'error',
+        message: isEn ? 'Failed to push sales to owner' : 'Kushindwa kusukuma mauzo kwa mwenye duka',
+        details: err?.message || 'Network error occurred during upload',
+      });
+    } finally {
+      setIsSyncingAttendantSales(false);
+    }
+  };
 
   // Trigger an immediate sync pass when ReportsScreen opens so the Owner always sees 100% up-to-date sales from all attendants
   useEffect(() => {
@@ -324,9 +452,20 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       const tMs = new Date(s.created_at).getTime();
       if (Number.isNaN(tMs) || tMs < startDateMs || tMs > endDateMs) return false;
       if (isOwner) return true;
-      return !loggedInUser || s.created_by === loggedInUser.id || s.recorded_by === loggedInUser.name;
+      if (!loggedInUser) return true;
+      const cashierInfo = resolveSaleCashierDisplay(s, usersMap, shopMeta, isEn);
+      const myId = loggedInUser.id?.trim().toLowerCase();
+      const myName = loggedInUser.name?.trim().toLowerCase();
+      const rec = s.recorded_by?.trim().toLowerCase();
+      const createdBy = s.created_by?.trim().toLowerCase();
+      const createdByName = s.created_by_name?.trim().toLowerCase();
+      const cashierName = cashierInfo.name?.trim().toLowerCase();
+      return (
+        (Boolean(myId) && (createdBy === myId || s.created_by === loggedInUser.id)) ||
+        (Boolean(myName) && (rec === myName || createdByName === myName || cashierName === myName))
+      );
     });
-  }, [allSales, startDateMs, endDateMs, isOwner, loggedInUser]);
+  }, [allSales, startDateMs, endDateMs, isOwner, loggedInUser, usersMap, shopMeta, isEn]);
 
   // Search-filtered sales (for Past Sales list & search bar)
   const searchFilteredSales = useMemo(() => {
@@ -388,6 +527,16 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     return Array.from(map.values()).sort((a, b) => b.totalSales - a.totalSales);
   }, [filteredSalesInWindow, usersMap, shopMeta, isEn, includeCreditInGrossSales]);
 
+  // Aggregate summary of attendant sales for the reconciliation engine
+  const attendantSalesSummary = useMemo(() => {
+    const attendants = salesByPerson.filter((p) => p.isAttendant);
+    const count = attendants.reduce((sum, a) => sum + a.count, 0);
+    const total = attendants.reduce((sum, a) => sum + a.totalSales, 0);
+    const profit = attendants.reduce((sum, a) => sum + a.totalProfit, 0);
+    const names = attendants.map((a) => a.name);
+    return { count, total, profit, names, attendants };
+  }, [salesByPerson]);
+
   // Filtered Expenses within Window
   const filteredExpenses = useMemo(() => {
     return allExpenses.filter((e) => {
@@ -403,7 +552,16 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       const tMs = new Date(d.created_at).getTime();
       if (Number.isNaN(tMs) || tMs < startDateMs || tMs > endDateMs) return false;
       if (isOwner) return true;
-      return !loggedInUser || d.created_by === loggedInUser.id || d.recorded_by === loggedInUser.name;
+      if (!loggedInUser) return true;
+      const myId = loggedInUser.id?.trim().toLowerCase();
+      const myName = loggedInUser.name?.trim().toLowerCase();
+      const rec = d.recorded_by?.trim().toLowerCase();
+      const createdBy = d.created_by?.trim().toLowerCase();
+      const createdByName = d.created_by_name?.trim().toLowerCase();
+      return (
+        (Boolean(myId) && (createdBy === myId || d.created_by === loggedInUser.id)) ||
+        (Boolean(myName) && (rec === myName || createdByName === myName))
+      );
     });
   }, [allDebts, startDateMs, endDateMs, isOwner, loggedInUser]);
 
@@ -1057,6 +1215,59 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Attendant & Owner Synchronization Action Button */}
+          {isOwner ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePullAttendantSales}
+              disabled={isSyncingAttendantSales}
+              className="flex items-center gap-1.5 text-xs font-bold border-indigo-300 text-indigo-900 bg-indigo-50 hover:bg-indigo-100 shadow-2xs transition active:scale-95"
+              title={isEn ? 'Pull all attendant sales reports' : 'Vuta mauzo ya wahudumu'}
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 text-indigo-700 ${isSyncingAttendantSales ? 'animate-spin' : ''}`}
+              />
+              <span className="hidden sm:inline">
+                {isSyncingAttendantSales
+                  ? isEn
+                    ? 'Pulling...'
+                    : 'Inavuta...'
+                  : isEn
+                  ? 'Pull Attendant Sales'
+                  : 'Vuta Mauzo'}
+              </span>
+              <span className="sm:hidden">
+                {isSyncingAttendantSales ? '...' : isEn ? 'Pull' : 'Vuta'}
+              </span>
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePushSalesToOwner}
+              disabled={isSyncingAttendantSales}
+              className="flex items-center gap-1.5 text-xs font-bold border-blue-300 text-blue-900 bg-blue-50 hover:bg-blue-100 shadow-2xs transition active:scale-95"
+              title={isEn ? "Push sales to owner's dashboard" : 'Sukuma mauzo kwa mwenye duka'}
+            >
+              <CloudUpload
+                className={`w-3.5 h-3.5 text-blue-700 ${isSyncingAttendantSales ? 'animate-bounce' : ''}`}
+              />
+              <span className="hidden sm:inline">
+                {isSyncingAttendantSales
+                  ? isEn
+                    ? 'Pushing...'
+                    : 'Inasukuma...'
+                  : isEn
+                  ? 'Push Sales to Owner'
+                  : 'Sukuma Mauzo'}
+              </span>
+              <span className="sm:hidden">
+                {isSyncingAttendantSales ? '...' : isEn ? 'Push' : 'Sukuma'}
+              </span>
+            </Button>
+          )}
+
           <Button
             variant="outline"
             size="sm"
@@ -1064,7 +1275,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             className="flex items-center gap-1.5 text-xs font-bold border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100"
           >
             <Download className="w-3.5 h-3.5 text-emerald-700" />
-            <span>{isEn ? 'Download Report' : 'Pakua Ripoti'}</span>
+            <span className="hidden sm:inline">{isEn ? 'Download Report' : 'Pakua Ripoti'}</span>
+            <span className="sm:hidden">{isEn ? 'Export' : 'Pakua'}</span>
           </Button>
 
           <Button
@@ -1074,10 +1286,50 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             className="flex items-center gap-1.5 shadow-sm text-xs font-bold"
           >
             <Lock className="w-3.5 h-3.5" />
-            {t.dayCloseBtn}
+            <span className="hidden sm:inline">{t.dayCloseBtn}</span>
+            <span className="sm:hidden">{isEn ? 'Day Close' : 'Funga Siku'}</span>
           </Button>
         </div>
       </div>
+
+      {/* Attendant & Owner Synchronization Feedback Toast Banner */}
+      {syncToast && (
+        <div
+          className={`mx-4 mt-3 p-3.5 rounded-2xl border flex items-start justify-between gap-3 shadow-md transition-all animate-in fade-in slide-in-from-top-2 ${
+            syncToast.type === 'success'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+              : syncToast.type === 'error'
+              ? 'bg-rose-50 border-rose-300 text-rose-950'
+              : 'bg-indigo-50 border-indigo-300 text-indigo-950'
+          }`}
+        >
+          <div className="flex items-start gap-2.5 min-w-0">
+            {syncToast.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+            ) : syncToast.type === 'error' ? (
+              <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            ) : (
+              <Info className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+            )}
+            <div className="min-w-0">
+              <div className="font-black text-xs">{syncToast.message}</div>
+              {syncToast.details && (
+                <div className="text-[11px] opacity-90 mt-0.5 leading-snug font-medium">
+                  {syncToast.details}
+                </div>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSyncToast(null)}
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 transition cursor-pointer shrink-0"
+            aria-label="Dismiss notification"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       <div className="p-4 space-y-4">
         {/* Multi-Branch Selector for Owners with more than 1 shop */}
@@ -1290,6 +1542,189 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
         {/* TAB 1: OVERVIEW & FINANCIALS */}
         {activeTab === 'overview' && (
           <div className="space-y-4 animate-in fade-in">
+            {/* Attendant & Owner Synchronization Hub Card */}
+            {isOwner ? (
+              <div className="p-4 bg-gradient-to-br from-indigo-50/90 via-white to-indigo-50/50 rounded-2xl border-2 border-indigo-200/90 shadow-xs space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <Users className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-black text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                        <span>
+                          {isEn
+                            ? 'Attendant Sales Reconciliation'
+                            : 'Ulinganisho wa Mauzo ya Wahudumu'}
+                        </span>
+                        <span className="text-[10px] font-black px-1.5 py-0.2 rounded-md bg-indigo-100 text-indigo-800">
+                          {isEn ? 'Owner Monitor' : 'Mwenye Duka'}
+                        </span>
+                      </h3>
+                      <p className="text-[11px] text-indigo-900 font-medium leading-snug mt-0.5">
+                        {isEn
+                          ? 'Pull sales reports from employed attendants to resolve discrepancies and match owner and attendant numbers 100%.'
+                          : 'Vuta ripoti za mauzo kutoka kwa wahudumu wako ili kulinganisha ripoti na kuondoa hitilafu zote 100%.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Summary Metrics */}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-white border border-indigo-150 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                      {isEn ? 'Attendant Sales' : 'Mauzo ya Wahudumu'}
+                    </span>
+                    <div className="text-sm font-black text-indigo-950 tabular-nums mt-0.5">
+                      {formatKES(attendantSalesSummary.total)}
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5">
+                      {attendantSalesSummary.count}{' '}
+                      {isEn ? 'orders in period' : 'mauzo kwenye kipindi'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-white border border-indigo-150 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                      {isEn ? 'Attendants Active' : 'Wahudumu Wanaouza'}
+                    </span>
+                    <div className="text-xs font-black text-indigo-950 truncate mt-0.5">
+                      {attendantSalesSummary.names.length > 0
+                        ? attendantSalesSummary.names.join(', ')
+                        : isEn
+                        ? 'None in window'
+                        : 'Hakuna mauzo'}
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5 truncate">
+                      {lastReconciledAt
+                        ? `${isEn ? 'Last pulled:' : 'Mwisho kuvuta:'} ${lastReconciledAt}`
+                        : isEn
+                        ? 'Click Pull to fetch'
+                        : 'Bofya kuvuta mauzo'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Pull Action Button */}
+                <Button
+                  variant="primary"
+                  size="md"
+                  onClick={handlePullAttendantSales}
+                  disabled={isSyncingAttendantSales}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-black text-xs py-2.5 shadow-sm flex items-center justify-center gap-2 rounded-xl transition cursor-pointer"
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${isSyncingAttendantSales ? 'animate-spin' : ''}`}
+                  />
+                  <span>
+                    {isSyncingAttendantSales
+                      ? isEn
+                        ? 'Pulling and Reconciling Attendant Sales...'
+                        : 'Inavuta na Kulinganisha Mauzo ya Wahudumu...'
+                      : isEn
+                      ? '⬇️ Pull Attendant Sales Reports'
+                      : '⬇️ Vuta Mauzo ya Wahudumu Wote'}
+                  </span>
+                </Button>
+              </div>
+            ) : (
+              <div className="p-4 bg-gradient-to-br from-blue-50/90 via-white to-blue-50/50 rounded-2xl border-2 border-blue-200/90 shadow-xs space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <CloudUpload className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-black text-blue-950 uppercase tracking-wider flex items-center gap-1.5">
+                        <span>
+                          {isEn
+                            ? "Push My Sales to Owner's Report"
+                            : 'Sukuma Mauzo Yangu kwa Mwenye Duka'}
+                        </span>
+                        <span className="text-[10px] font-black px-1.5 py-0.2 rounded-md bg-blue-100 text-blue-800">
+                          {isEn ? 'Attendant Sync' : 'Mhudumu'}
+                        </span>
+                      </h3>
+                      <p className="text-[11px] text-blue-900 font-medium leading-snug mt-0.5">
+                        {isEn
+                          ? "Push all your recorded sales, credit orders, and collections directly to the owner's dashboard so their report matches yours exactly."
+                          : 'Tuma mauzo yako yote, madeni, na makusanyo moja kwa moja kwenye dashibodi ya mwenye duka ili ripoti zenu zilingane 100%.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Attendant Metrics */}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-white border border-blue-150 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                      {isEn ? 'Your Sales in Period' : 'Mauzo Yako Kipindi Hiki'}
+                    </span>
+                    <div className="text-sm font-black text-blue-950 tabular-nums mt-0.5">
+                      {formatKES(totalGrossSales)}
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5">
+                      {transactionCount}{' '}
+                      {isEn ? 'orders recorded' : 'mauzo uliyofanya'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-white border border-blue-150 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                      {isEn ? 'Push Status' : 'Hali ya Kutuma'}
+                    </span>
+                    <div className="text-xs font-black text-blue-950 mt-0.5 flex items-center gap-1">
+                      {pendingOutboxCount === 0 ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="text-emerald-700">
+                            {isEn ? 'All Synced' : 'Yote Yamesukumwa'}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                          <span className="text-amber-700">
+                            {pendingOutboxCount} {isEn ? 'pending' : 'yanasubiri'}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5 truncate">
+                      {lastPushedToOwnerAt
+                        ? `${isEn ? 'Last sent:' : 'Mwisho kutuma:'} ${lastPushedToOwnerAt}`
+                        : isEn
+                        ? 'Tap below to send'
+                        : 'Bonyeza kitufe kutuma'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Push Action Button */}
+                <Button
+                  variant="primary"
+                  size="md"
+                  onClick={handlePushSalesToOwner}
+                  disabled={isSyncingAttendantSales}
+                  className="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs py-2.5 shadow-sm flex items-center justify-center gap-2 rounded-xl transition cursor-pointer"
+                >
+                  <CloudUpload
+                    className={`w-4 h-4 ${isSyncingAttendantSales ? 'animate-bounce' : ''}`}
+                  />
+                  <span>
+                    {isSyncingAttendantSales
+                      ? isEn
+                        ? 'Pushing All Your Sales to Owner...'
+                        : 'Inasukuma Mauzo Yako kwa Mwenye Duka...'
+                      : isEn
+                      ? '⬆️ Push All My Sales to Owner'
+                      : '⬆️ Sukuma Mauzo Yote kwa Mwenye Duka'}
+                  </span>
+                </Button>
+              </div>
+            )}
+
             {/* Two Hero Cards: Sales green & Profit blue */}
             <div className="grid grid-cols-2 gap-3">
               {/* Sales */}
@@ -1417,15 +1852,40 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 <span className="text-xs font-bold text-slate-700">
                   {isEn ? 'Sales by Person (Owner & Attendants)' : 'Mauzo kwa Kila Mtu (Mwenye Duka & Wahudumu)'}
                 </span>
-                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
-                  {isOwner
-                    ? isEn
-                      ? 'All Shop Sales'
-                      : 'Mauzo Yote ya Duka'
-                    : isEn
-                    ? 'Your Sales'
-                    : 'Mauzo Yako'}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                    {isOwner
+                      ? isEn
+                        ? 'All Shop Sales'
+                        : 'Mauzo Yote ya Duka'
+                      : isEn
+                      ? 'Your Sales'
+                      : 'Mauzo Yako'}
+                  </span>
+                  {isOwner ? (
+                    <button
+                      type="button"
+                      onClick={handlePullAttendantSales}
+                      disabled={isSyncingAttendantSales}
+                      className="text-[10px] font-black text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded-full border border-indigo-200 transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                      title={isEn ? 'Reconcile attendant sales' : 'Vuta mauzo ya wahudumu'}
+                    >
+                      <RefreshCw className={`w-2.5 h-2.5 ${isSyncingAttendantSales ? 'animate-spin' : ''}`} />
+                      <span>{isEn ? 'Sync Attendants' : 'Vuta Mauzo'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handlePushSalesToOwner}
+                      disabled={isSyncingAttendantSales}
+                      className="text-[10px] font-black text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-full border border-blue-200 transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                      title={isEn ? 'Push sales to owner' : 'Sukuma mauzo kwa mwenye duka'}
+                    >
+                      <CloudUpload className={`w-2.5 h-2.5 ${isSyncingAttendantSales ? 'animate-bounce' : ''}`} />
+                      <span>{isEn ? 'Push to Owner' : 'Sukuma Mauzo'}</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               {salesByPerson.length === 0 ? (
