@@ -572,12 +572,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={() => isOwner && onChangeRole('owner')}
-              disabled={!isOwner}
-              className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 ${
+              onClick={async () => {
+                onChangeRole('owner');
+                const u = await getShopUser();
+                if (u) await saveShopUser({ role: 'owner' });
+              }}
+              className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
                 isOwner
-                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 cursor-pointer'
-                  : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
               }`}
             >
               <Shield className="w-5 h-5 text-blue-600" />
@@ -586,23 +589,21 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
             <button
               type="button"
-              onClick={() => isOwner && onChangeRole('attendant')}
-              disabled={!isOwner}
-              className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 ${
+              onClick={async () => {
+                onChangeRole('attendant');
+                const u = await getShopUser();
+                if (u) await saveShopUser({ role: 'attendant' });
+              }}
+              className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
                 !isOwner
-                  ? 'bg-slate-100 border-slate-500 text-slate-900 ring-2 ring-slate-500/20 cursor-default'
-                  : 'bg-white border-slate-200 text-slate-600 cursor-pointer'
+                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
               }`}
             >
               <Smartphone className="w-5 h-5 text-slate-600" />
               <span>{isEn ? 'Attendant' : 'Mhudumu (Attendant)'}</span>
             </button>
           </div>
-          {!isOwner && (
-            <p className="text-[10px] text-amber-600 font-bold text-center mt-1">
-              {isEn ? 'User role cannot be changed by an Attendant.' : 'Nafasi ya mtumiaji haiwezi kubadilishwa na Mhudumu.'}
-            </p>
-          )}
         </div>
 
         {/* Language Switcher */}

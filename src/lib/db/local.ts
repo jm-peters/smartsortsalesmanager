@@ -1106,6 +1106,8 @@ export async function recordSale(saleData: {
     phone?: string | null;
   } | null;
   creditOverrideReason?: string | null;
+  sellerRole?: UserRole;
+  cashierName?: string;
 }): Promise<{ sale: SaleHeader; items: SaleItem[] }> {
   const shop = await getShopMeta();
   const deviceId = await getOrCreateDeviceId();
@@ -1281,22 +1283,25 @@ export async function recordSale(saleData: {
 
   const activeUser = await getShopUser();
   const staffAttendants = await getStaffAttendants();
-  let creatorRole: UserRole = activeUser?.role || shop.role || 'owner';
+  let creatorRole: UserRole = saleData.sellerRole || activeUser?.role || shop.role || 'owner';
   let creatorId = activeUser?.id || shop.user_id;
 
-  // Match against staff attendants if logged in as attendant
+  // Match against staff attendants if logged in or acting as attendant
   const matchedAtt = staffAttendants.find(
     (a) =>
       a.id === creatorId ||
       (activeUser?.email && a.email?.toLowerCase() === activeUser.email.toLowerCase()) ||
       (activeUser?.phone && a.phone.toLowerCase() === activeUser.phone.toLowerCase())
   );
-  if (matchedAtt) {
+  if (matchedAtt || saleData.sellerRole === 'attendant') {
     creatorRole = 'attendant';
+    if (!creatorId || creatorId === shop.user_id) {
+      creatorId = matchedAtt?.id || staffAttendants[0]?.id || 'user-attendant-001';
+    }
   }
 
   const rawCashierName =
-    (matchedAtt?.name || activeUser?.name || '').trim();
+    (saleData.cashierName || matchedAtt?.name || (creatorRole === 'attendant' ? (staffAttendants[0]?.name || activeUser?.name) : activeUser?.name) || '').trim();
   const isGenericDefaultName =
     !rawCashierName ||
     rawCashierName.toLowerCase() === 'smartsort user' ||
@@ -1305,7 +1310,7 @@ export async function recordSale(saleData: {
   const cashierName = isGenericDefaultName
     ? creatorRole === 'owner'
       ? (shop.owner_name && shop.owner_name !== 'Smartsort User' ? shop.owner_name : activeUser?.username || 'Shop Owner')
-      : (matchedAtt?.name || activeUser?.username || 'Attendant')
+      : (matchedAtt?.name || staffAttendants[0]?.name || activeUser?.username || 'Attendant')
     : rawCashierName;
 
   if (debtRecord) {

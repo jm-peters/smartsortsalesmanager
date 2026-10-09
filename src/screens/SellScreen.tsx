@@ -909,6 +909,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({
         items: cart,
         customer: customerData,
         creditOverrideReason: overrideReason,
+        sellerRole: userRole,
       });
 
       const saleRecord: CompletedSaleState = {

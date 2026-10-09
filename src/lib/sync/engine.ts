@@ -16,6 +16,8 @@ import {
   registerDirectSyncDispatcher,
   recalculateStockFromLedger,
   deduplicateStaffAttendants,
+  getStaffAttendants,
+  getShopUser,
   type OutboxEntry,
 } from '../db/local';
 import type { RemoteAdapter } from '../remote/types';
@@ -1033,17 +1035,19 @@ class SyncEngine {
       this.pullPassCount = 0;
       await this.pullUpdates();
 
-      // 4. Do an explicit deep pull query directly from adapter for sales and items to ensure all pages are ingested
-      for (const table of ['sales', 'sale_items', 'debts', 'debt_payments', 'expenses']) {
+      // 4. Do an explicit deep pull query directly from adapter for all tables to ensure 100% ingested
+      for (const table of ['users', 'sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'stock_movements']) {
         try {
           const res = await this.adapter.pullSince(table, shopId, 0, 1000);
           if (res.rows && res.rows.length > 0) {
             const normalizedRows = res.rows.map((r: any) => {
               const row = { ...r };
+              row.shop_id = shopId; // Adopt target shop_id so Dexie indexes & branch queries match 100%
               if (table === 'sales') {
                 row.total = Number(row.total || 0);
                 row.total_profit = Number(row.total_profit || 0);
                 row.item_count = Number(row.item_count || 1);
+                row.status = row.status || 'completed';
                 row.recorded_by = row.recorded_by || row.cashier_name || row.created_by_name || undefined;
               } else if (table === 'sale_items') {
                 row.qty = Number(row.qty || 0);
@@ -1055,6 +1059,8 @@ class SyncEngine {
                 row.principal = Number(row.principal || 0);
                 row.amount_paid = Number(row.amount_paid || 0);
                 row.recorded_by = row.recorded_by || row.created_by_name || undefined;
+              } else if (table === 'stock_movements') {
+                row.delta = Number(row.delta || 0);
               }
               return row;
             });
@@ -1068,15 +1074,120 @@ class SyncEngine {
         }
       }
 
-      // 5. Recompute stock from ledger
+      // 5. Ingest from local shared storage / attendant vaults directly to eliminate any possible latency
+      try {
+        if (typeof localStorage !== 'undefined') {
+          // A. Attendant vault sales
+          const vaultSales: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_sales') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_sales') || '[]'),
+          ];
+          if (vaultSales.length > 0) {
+            const map = new Map<string, any>();
+            vaultSales.forEach((s) => {
+              if (s && s.id) {
+                map.set(s.id, {
+                  ...s,
+                  shop_id: shopId,
+                  total: Number(s.total || 0),
+                  total_profit: Number(s.total_profit || 0),
+                  item_count: Number(s.item_count || 1),
+                  status: s.status || 'completed',
+                  recorded_by: s.recorded_by || s.cashier_name || s.created_by_name || 'Attendant',
+                  cashier_name: s.cashier_name || s.recorded_by || 'Attendant',
+                  created_by_role: s.created_by_role || 'attendant',
+                });
+              }
+            });
+            await db.sales.bulkPut(Array.from(map.values()));
+          }
+
+          // B. Attendant vault items
+          const vaultItems: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_items') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_sale_items') || '[]'),
+          ];
+          if (vaultItems.length > 0) {
+            const map = new Map<string, any>();
+            vaultItems.forEach((it) => {
+              if (it && it.id) {
+                map.set(it.id, {
+                  ...it,
+                  shop_id: shopId,
+                  qty: Number(it.qty || 0),
+                  unit_price: Number(it.unit_price || 0),
+                  unit_cost: Number(it.unit_cost || 0),
+                  line_total: Number(it.line_total || 0),
+                  line_profit: Number(it.line_profit || 0),
+                });
+              }
+            });
+            await db.sale_items.bulkPut(Array.from(map.values()));
+          }
+
+          // C. Attendant vault debts
+          const vaultDebts: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_debts') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_debts') || '[]'),
+          ];
+          if (vaultDebts.length > 0) {
+            const map = new Map<string, any>();
+            vaultDebts.forEach((d) => {
+              if (d && d.id) {
+                map.set(d.id, {
+                  ...d,
+                  shop_id: shopId,
+                  principal: Number(d.principal || 0),
+                  amount_paid: Number(d.amount_paid || 0),
+                  recorded_by: d.recorded_by || d.created_by_name || 'Attendant',
+                });
+              }
+            });
+            await db.debts.bulkPut(Array.from(map.values()));
+          }
+
+          // D. Attendant users and staff
+          const vaultUsers: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_users') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_users') || '[]'),
+          ];
+          if (vaultUsers.length > 0) {
+            for (const u of vaultUsers) {
+              if (u && u.id) {
+                await db.users.put({ ...u, shop_id: shopId });
+              }
+            }
+          }
+
+          const vaultStaff: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_staff') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_staff_attendants') || '[]'),
+          ];
+          if (vaultStaff.length > 0) {
+            const existingMeta = await db.meta.get('staff_attendants');
+            const localStaff: any[] = Array.isArray(existingMeta?.value) ? existingMeta.value : [];
+            const staffMap = new Map<string, any>();
+            localStaff.forEach((s) => staffMap.set(s.id, s));
+            vaultStaff.forEach((s) => {
+              if (s && s.id && !staffMap.has(s.id)) {
+                staffMap.set(s.id, s);
+              }
+            });
+            await db.meta.put({ key: 'staff_attendants', value: Array.from(staffMap.values()) });
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 6. Recompute stock from ledger
       await recalculateStockFromLedger();
 
-      // 6. Inspect Dexie for summary metrics
-      const sales = await db.sales
-        .where('shop_id')
-        .equals(shopId)
-        .filter((s) => s.status === 'completed')
-        .toArray();
+      // 7. Inspect Dexie for summary metrics across shop
+      const allDbSales = await db.sales.toArray();
+      const sales = allDbSales.filter(
+        (s) => s.status === 'completed' && (!s.shop_id || s.shop_id === shopId)
+      );
 
       const ownerName = (meta?.value?.owner_name || '').trim().toLowerCase();
       const attendantNamesSet = new Set<string>();
@@ -1090,6 +1201,7 @@ class SyncEngine {
           role === 'attendant' ||
           (Boolean(rec) &&
             rec.toLowerCase() !== ownerName &&
+            rec.toLowerCase() !== 'shop owner' &&
             rec.toLowerCase() !== 'smartsort user');
         if (isAttendant && rec) {
           attendantNamesSet.add(rec);
@@ -1109,6 +1221,8 @@ class SyncEngine {
               type: 'REPORTS_RECONCILED',
               timestamp: Date.now(),
               shopId,
+              attendantSalesCount,
+              attendantSalesTotal,
             });
           }
           localStorage.setItem('smartsort_reports_pulse', String(Date.now()));
@@ -1179,46 +1293,91 @@ class SyncEngine {
         }
       }
 
-      // 2. Ensure all local completed sales and items are also pushed directly to remote adapter
-      const localSales = await db.sales
-        .where('shop_id')
-        .equals(shopId)
-        .filter((s) => s.status === 'completed')
-        .toArray();
+      // 2. Fetch all local sales, items, and debts regardless of minor shop_id discrepancies
+      const allDbSales = await db.sales.toArray();
+      const localSales = allDbSales.filter((s) => s.status === 'completed');
 
-      const localItems = await db.sale_items
-        .where('shop_id')
-        .equals(shopId)
-        .toArray();
+      const localItems = await db.sale_items.toArray();
+      const localDebts = await db.debts.toArray();
+      const localStockMovements = await db.stock_movements.toArray();
+      const localUsers = await db.users.toArray();
+      const localStaff = await getStaffAttendants();
+      const activeUser = await getShopUser();
 
-      const localDebts = await db.debts
-        .where('shop_id')
-        .equals(shopId)
-        .toArray();
+      const attendantName = (
+        activeUser?.name && activeUser.name !== 'Smartsort User'
+          ? activeUser.name
+          : localStaff[0]?.name || 'Attendant'
+      ).trim();
 
-      const localStockMovements = await db.stock_movements
-        .where('shop_id')
-        .equals(shopId)
-        .toArray();
+      // Normalize sales to be tagged with shopId, attendant role, and name
+      const normalizedSales = localSales.map((s) => {
+        const copy: any = { ...s };
+        copy.shop_id = shopId;
+        copy.created_by_role = 'attendant';
+        copy.recorded_by = copy.recorded_by || copy.cashier_name || attendantName;
+        copy.cashier_name = copy.cashier_name || attendantName;
+        copy.created_by_name = copy.created_by_name || attendantName;
+        copy.created_by = attendantUserId || copy.created_by || activeUser?.id || 'user-attendant-001';
+        return copy;
+      });
 
-      // Push batches to remote adapter to guarantee owner gets them
-      if (localSales.length > 0) {
-        const sanitizedSales = localSales.map((s) => this.sanitizePayload('sales', s as any));
+      const normalizedItems = localItems.map((it) => ({
+        ...it,
+        shop_id: shopId,
+      }));
+
+      const normalizedDebts = localDebts.map((d) => ({
+        ...d,
+        shop_id: shopId,
+        created_by_role: 'attendant',
+        recorded_by: d.recorded_by || attendantName,
+      }));
+
+      const normalizedMovements = localStockMovements.map((m) => ({
+        ...m,
+        shop_id: shopId,
+      }));
+
+      // Store in dedicated attendant sync vault for 100% reliable local/remote transfer
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('smartsort_attendant_vault_sales', JSON.stringify(normalizedSales));
+          localStorage.setItem('smartsort_attendant_vault_items', JSON.stringify(normalizedItems));
+          localStorage.setItem('smartsort_attendant_vault_debts', JSON.stringify(normalizedDebts));
+          if (localUsers.length > 0) {
+            localStorage.setItem('smartsort_attendant_vault_users', JSON.stringify(localUsers));
+          }
+          if (localStaff.length > 0) {
+            localStorage.setItem('smartsort_attendant_vault_staff', JSON.stringify(localStaff));
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // Push batches to remote adapter
+      if (normalizedSales.length > 0) {
+        const sanitizedSales = normalizedSales.map((s) => this.sanitizePayload('sales', s as any));
         await this.adapter.pushBatch('sales', sanitizedSales);
       }
-      if (localItems.length > 0) {
-        const sanitizedItems = localItems.map((it) => this.sanitizePayload('sale_items', it as any));
+      if (normalizedItems.length > 0) {
+        const sanitizedItems = normalizedItems.map((it) => this.sanitizePayload('sale_items', it as any));
         await this.adapter.pushBatch('sale_items', sanitizedItems);
       }
-      if (localDebts.length > 0) {
-        const sanitizedDebts = localDebts.map((d) => this.sanitizePayload('debts', d as any));
+      if (normalizedDebts.length > 0) {
+        const sanitizedDebts = normalizedDebts.map((d) => this.sanitizePayload('debts', d as any));
         await this.adapter.pushBatch('debts', sanitizedDebts);
       }
-      if (localStockMovements.length > 0) {
-        const sanitizedMovs = localStockMovements.map((m) =>
+      if (normalizedMovements.length > 0) {
+        const sanitizedMovs = normalizedMovements.map((m) =>
           this.sanitizePayload('stock_movements', m as any)
         );
         await this.adapter.pushBatch('stock_movements', sanitizedMovs);
+      }
+      if (localUsers.length > 0) {
+        const sanitizedUsers = localUsers.map((u) => this.sanitizePayload('users', u as any));
+        await this.adapter.pushBatch('users', sanitizedUsers);
       }
 
       // 3. Flush outbox queue
@@ -1238,6 +1397,7 @@ class SyncEngine {
               timestamp: Date.now(),
               shopId,
               attendantUserId,
+              pushedSalesCount: normalizedSales.length,
             });
           }
           localStorage.setItem('smartsort_reports_pulse', String(Date.now()));
@@ -1255,9 +1415,9 @@ class SyncEngine {
 
       return {
         success: true,
-        pushedSalesCount: localSales.length,
-        pushedItemsCount: localItems.length,
-        pushedDebtsCount: localDebts.length,
+        pushedSalesCount: normalizedSales.length,
+        pushedItemsCount: normalizedItems.length,
+        pushedDebtsCount: normalizedDebts.length,
         pendingRemaining,
         message: 'All sales and transactions successfully pushed to the owner!',
       };

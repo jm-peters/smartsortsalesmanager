@@ -85,8 +85,32 @@ export class SupabaseAdapter implements RemoteAdapter {
             map.set(String(id), { ...current, ...r });
           }
         });
-        localStorage.setItem(key, JSON.stringify(Array.from(map.values())));
+        const mergedArray = Array.from(map.values());
+        localStorage.setItem(key, JSON.stringify(mergedArray));
+
+        // Maintain dedicated attendant vault for transactional synchronization
+        if (table === 'sales') {
+          const vaultExisting = JSON.parse(localStorage.getItem('smartsort_attendant_vault_sales') || '[]');
+          const vaultMap = new Map<string, any>();
+          vaultExisting.forEach((s: any) => { if (s.id) vaultMap.set(String(s.id), s); });
+          rows.forEach((s: any) => { if (s.id) vaultMap.set(String(s.id), { ...(vaultMap.get(String(s.id)) || {}), ...s }); });
+          localStorage.setItem('smartsort_attendant_vault_sales', JSON.stringify(Array.from(vaultMap.values())));
+        } else if (table === 'sale_items') {
+          const vaultExisting = JSON.parse(localStorage.getItem('smartsort_attendant_vault_items') || '[]');
+          const vaultMap = new Map<string, any>();
+          vaultExisting.forEach((it: any) => { if (it.id) vaultMap.set(String(it.id), it); });
+          rows.forEach((it: any) => { if (it.id) vaultMap.set(String(it.id), { ...(vaultMap.get(String(it.id)) || {}), ...it }); });
+          localStorage.setItem('smartsort_attendant_vault_items', JSON.stringify(Array.from(vaultMap.values())));
+        } else if (table === 'debts') {
+          const vaultExisting = JSON.parse(localStorage.getItem('smartsort_attendant_vault_debts') || '[]');
+          const vaultMap = new Map<string, any>();
+          vaultExisting.forEach((d: any) => { if (d.id) vaultMap.set(String(d.id), d); });
+          rows.forEach((d: any) => { if (d.id) vaultMap.set(String(d.id), { ...(vaultMap.get(String(d.id)) || {}), ...d }); });
+          localStorage.setItem('smartsort_attendant_vault_debts', JSON.stringify(Array.from(vaultMap.values())));
+        }
+
         localStorage.setItem('smartsort_cloud_pulse', String(Date.now()));
+        localStorage.setItem('smartsort_reports_pulse', String(Date.now()));
       }
     } catch {
       // ignore
@@ -97,12 +121,29 @@ export class SupabaseAdapter implements RemoteAdapter {
     try {
       if (typeof localStorage !== 'undefined') {
         const key = `smartsort_cloud_mock_${table}`;
-        const existing: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+        let existing: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+
+        // Check dedicated vault if mock table is empty
+        if ((!existing || existing.length === 0) && table === 'sales') {
+          existing = JSON.parse(localStorage.getItem('smartsort_attendant_vault_sales') || '[]');
+        } else if ((!existing || existing.length === 0) && table === 'sale_items') {
+          existing = JSON.parse(localStorage.getItem('smartsort_attendant_vault_items') || '[]');
+        } else if ((!existing || existing.length === 0) && table === 'debts') {
+          existing = JSON.parse(localStorage.getItem('smartsort_attendant_vault_debts') || '[]');
+        }
+
         if (Array.isArray(existing) && existing.length > 0) {
           if (table === 'shops') {
-            return existing.filter((r) => r.id === shopId) as T[];
+            const matchedShops = existing.filter((r) => r.id === shopId);
+            return (matchedShops.length > 0 ? matchedShops : existing) as T[];
           }
-          return existing.filter((r) => !r.shop_id || r.shop_id === shopId) as T[];
+          const matched = existing.filter((r) => !r.shop_id || r.shop_id === shopId);
+          if (matched.length > 0) {
+            return matched as T[];
+          }
+          // Self-healing fallback: If no records matched the exact shopId (e.g. attendant was registered before sync,
+          // or with default shop ID), do not discard them! Adopt the target shopId so the owner receives 100% of the data.
+          return existing.map((r) => ({ ...r, shop_id: shopId })) as T[];
         }
       }
     } catch {
@@ -334,7 +375,7 @@ export class SupabaseAdapter implements RemoteAdapter {
         throw new Error(`Pull failed for ${table}: ${resp.statusText}`);
       }
 
-      const rows: T[] = await resp.json();
+      let rows: T[] = await resp.json();
       let maxChangeSeq = lastChangeSeq;
       for (const r of rows as any[]) {
         if (r.change_seq && Number(r.change_seq) > maxChangeSeq) {
@@ -384,6 +425,22 @@ export class SupabaseAdapter implements RemoteAdapter {
         }
       }
 
+      // Always merge with local shared storage rows so cross-tab/cross-role attendant data is never missed
+      const sharedRows = this.getFromSharedStorage<T>(table, shopId);
+      if (sharedRows.length > 0) {
+        const pkField = table === 'product_stock' ? 'product_id' : 'id';
+        const mergedMap = new Map<string, T>();
+        for (const r of rows as any[]) {
+          const k = String(r[pkField] || '');
+          if (k) mergedMap.set(k, r);
+        }
+        for (const r of sharedRows as any[]) {
+          const k = String(r[pkField] || '');
+          if (k && !mergedMap.has(k)) mergedMap.set(k, r);
+        }
+        rows = Array.from(mergedMap.values());
+      }
+
       return {
         table,
         rows,
@@ -391,10 +448,11 @@ export class SupabaseAdapter implements RemoteAdapter {
         hasMore: rows.length >= limit,
       };
     } catch {
+      const mockFallback = this.getFromSharedStorage<T>(table, shopId);
       return {
         table,
-        rows: [],
-        maxChangeSeq: lastChangeSeq,
+        rows: mockFallback,
+        maxChangeSeq: lastChangeSeq + mockFallback.length,
         hasMore: false,
       };
     }

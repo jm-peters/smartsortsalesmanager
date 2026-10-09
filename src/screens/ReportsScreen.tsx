@@ -312,7 +312,14 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     if (targetShopId === 'all') {
       return branchShopIdsSet.size > 0 ? branchShopIdsSet.has(recordShopId) : true;
     }
-    return recordShopId === targetShopId;
+    if (recordShopId === targetShopId) return true;
+    // For single shop owners, match records with default demo shop ID or current shop ID
+    if (ownerBranches.length <= 1) {
+      if (recordShopId === 'shop-demo-kenya-001' || targetShopId === 'shop-demo-kenya-001') {
+        return true;
+      }
+    }
+    return false;
   };
 
   const allSales = useLiveQuery(
@@ -462,7 +469,9 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       const cashierName = cashierInfo.name?.trim().toLowerCase();
       return (
         (Boolean(myId) && (createdBy === myId || s.created_by === loggedInUser.id)) ||
-        (Boolean(myName) && (rec === myName || createdByName === myName || cashierName === myName))
+        (Boolean(myName) && (rec === myName || createdByName === myName || cashierName === myName)) ||
+        s.created_by_role === 'attendant' ||
+        cashierInfo.isAttendant
       );
     });
   }, [allSales, startDateMs, endDateMs, isOwner, loggedInUser, usersMap, shopMeta, isEn]);
