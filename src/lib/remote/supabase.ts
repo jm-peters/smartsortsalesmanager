@@ -121,28 +121,53 @@ export class SupabaseAdapter implements RemoteAdapter {
     try {
       if (typeof localStorage !== 'undefined') {
         const key = `smartsort_cloud_mock_${table}`;
-        let existing: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+        const mockList: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+        let vaultList: any[] = [];
 
-        // Check dedicated vault if mock table is empty
-        if ((!existing || existing.length === 0) && table === 'sales') {
-          existing = JSON.parse(localStorage.getItem('smartsort_attendant_vault_sales') || '[]');
-        } else if ((!existing || existing.length === 0) && table === 'sale_items') {
-          existing = JSON.parse(localStorage.getItem('smartsort_attendant_vault_items') || '[]');
-        } else if ((!existing || existing.length === 0) && table === 'debts') {
-          existing = JSON.parse(localStorage.getItem('smartsort_attendant_vault_debts') || '[]');
+        if (table === 'sales') {
+          vaultList = JSON.parse(localStorage.getItem('smartsort_attendant_vault_sales') || '[]');
+        } else if (table === 'sale_items') {
+          vaultList = JSON.parse(localStorage.getItem('smartsort_attendant_vault_items') || '[]');
+        } else if (table === 'debts') {
+          vaultList = JSON.parse(localStorage.getItem('smartsort_attendant_vault_debts') || '[]');
+        } else if (table === 'users') {
+          vaultList = JSON.parse(localStorage.getItem('smartsort_attendant_vault_users') || '[]');
+        } else if (table === 'staff_attendants') {
+          vaultList = JSON.parse(localStorage.getItem('smartsort_attendant_vault_staff') || '[]');
         }
 
-        if (Array.isArray(existing) && existing.length > 0) {
+        const pkField = table === 'product_stock' ? 'product_id' : 'id';
+        const combinedMap = new Map<string, any>();
+
+        if (Array.isArray(mockList)) {
+          mockList.forEach((r) => {
+            if (r && r[pkField]) combinedMap.set(String(r[pkField]), r);
+          });
+        }
+        if (Array.isArray(vaultList)) {
+          vaultList.forEach((r) => {
+            if (r && r[pkField]) {
+              const prev = combinedMap.get(String(r[pkField])) || {};
+              combinedMap.set(String(r[pkField]), { ...prev, ...r });
+            }
+          });
+        }
+
+        const existing = Array.from(combinedMap.values());
+
+        if (existing.length > 0) {
           if (table === 'shops') {
             const matchedShops = existing.filter((r) => r.id === shopId);
             return (matchedShops.length > 0 ? matchedShops : existing) as T[];
+          }
+          // For transactional tables, include all records and adopt target shopId so cross-role/attendant records are never orphaned
+          if (['sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users', 'staff_attendants'].includes(table)) {
+            return existing.map((r) => ({ ...r, shop_id: shopId })) as T[];
           }
           const matched = existing.filter((r) => !r.shop_id || r.shop_id === shopId);
           if (matched.length > 0) {
             return matched as T[];
           }
-          // Self-healing fallback: If no records matched the exact shopId (e.g. attendant was registered before sync,
-          // or with default shop ID), do not discard them! Adopt the target shopId so the owner receives 100% of the data.
           return existing.map((r) => ({ ...r, shop_id: shopId })) as T[];
         }
       }
@@ -416,12 +441,33 @@ export class SupabaseAdapter implements RemoteAdapter {
               maxChangeSeq = Number(r.change_seq);
             }
           }
-          return {
-            table,
-            rows: Array.from(mergedMap.values()),
-            maxChangeSeq,
-            hasMore: rows.length >= limit,
-          };
+          rows = Array.from(mergedMap.values());
+        }
+
+        // Cross-device shop_id mismatch self-healing: if rows is still empty for sales/sale_items/debts/users,
+        // check if attendant pushed under a fallback/default shop_id and adopt those records
+        if (
+          rows.length === 0 &&
+          ['sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)
+        ) {
+          try {
+            const anyShopParams: Record<string, string> = { limit: '200' };
+            if (['sales', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)) {
+              anyShopParams['order'] = 'created_at.desc';
+            }
+            const anyShopQuery = new URLSearchParams(anyShopParams);
+            const anyShopResp = await fetch(`${this.url}/rest/v1/${table}?${anyShopQuery}`, {
+              headers: this.getAuthHeaders(),
+            });
+            if (anyShopResp.ok) {
+              const anyShopRows: T[] = await anyShopResp.json();
+              if (Array.isArray(anyShopRows) && anyShopRows.length > 0) {
+                rows = anyShopRows;
+              }
+            }
+          } catch {
+            // ignore
+          }
         }
       }
 
@@ -436,7 +482,11 @@ export class SupabaseAdapter implements RemoteAdapter {
         }
         for (const r of sharedRows as any[]) {
           const k = String(r[pkField] || '');
-          if (k && !mergedMap.has(k)) mergedMap.set(k, r);
+          if (k) {
+            const existing = mergedMap.get(k) as any;
+            // Preserve attendant attribution fields from local vault if remote stripped them
+            mergedMap.set(k, existing ? { ...r, ...existing, recorded_by: existing.recorded_by || r.recorded_by, cashier_name: existing.cashier_name || r.cashier_name, created_by_name: existing.created_by_name || r.created_by_name, created_by_role: existing.created_by_role || r.created_by_role } : r);
+          }
         }
         rows = Array.from(mergedMap.values());
       }
@@ -447,7 +497,10 @@ export class SupabaseAdapter implements RemoteAdapter {
         maxChangeSeq,
         hasMore: rows.length >= limit,
       };
-    } catch {
+    } catch (err: any) {
+      if (this.isConfigured()) {
+        throw new Error(err?.message || `Network jitter during pull for ${table}`);
+      }
       const mockFallback = this.getFromSharedStorage<T>(table, shopId);
       return {
         table,

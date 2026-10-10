@@ -41,6 +41,9 @@ const PUSH_ORDER = [
   'subscription_payments',
 ];
 
+// Exponential backoff schedule for failed background sync operations (5s, 30s, 2m)
+const BACKOFF_INTERVALS_MS = [5_000, 30_000, 120_000] as const;
+
 export interface SyncStatus {
   isSyncing: boolean;
   unpushedCount: number;
@@ -48,6 +51,8 @@ export interface SyncStatus {
   lastSyncedAt: Date | null;
   lastError: string | null;
   isOnline: boolean;
+  retryAttempt?: number;
+  nextRetryAt?: Date | null;
 }
 
 type SyncListener = (status: SyncStatus) => void;
@@ -59,6 +64,9 @@ class SyncEngine {
   private syncTimer: any = null;
   private connectivityWatchTimer: any = null;
   private reconnectStabilizeTimer: any = null;
+  private backoffRetryTimer: any = null;
+  private consecutiveSyncFailures = 0;
+  private nextBackoffRetryMs = 0;
   private broadcastChannel: any = null;
   private realtimeChannel: any = null;
   private realtimeShopId: string | null = null;
@@ -71,6 +79,8 @@ class SyncEngine {
     lastSyncedAt: null,
     lastError: null,
     isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    retryAttempt: 0,
+    nextRetryAt: null,
   };
 
   constructor(adapter: RemoteAdapter = defaultRemoteAdapter) {
@@ -102,6 +112,59 @@ class SyncEngine {
   }
 
   /**
+   * Computes the exponential backoff delay (5s -> 30s -> 2m) for a 1-based attempt number
+   */
+  private getBackoffDelayMs(attempt: number): number {
+    const idx = Math.max(0, Math.min(attempt - 1, BACKOFF_INTERVALS_MS.length - 1));
+    return BACKOFF_INTERVALS_MS[idx];
+  }
+
+  /**
+   * Clears any active background sync backoff state and timer upon successful sync or reconnect
+   */
+  private clearBackoffRetry(): void {
+    if (this.backoffRetryTimer) {
+      clearTimeout(this.backoffRetryTimer);
+      this.backoffRetryTimer = null;
+    }
+    this.consecutiveSyncFailures = 0;
+    this.nextBackoffRetryMs = 0;
+    this.currentStatus.retryAttempt = 0;
+    this.currentStatus.nextRetryAt = null;
+  }
+
+  /**
+   * Schedules an automatic background sync retry using the 5s -> 30s -> 2m exponential backoff intervals
+   * when a pull or push operation fails due to network jitter.
+   */
+  private scheduleBackoffRetry(reason?: string): void {
+    this.consecutiveSyncFailures += 1;
+    const delayMs = this.getBackoffDelayMs(this.consecutiveSyncFailures);
+    const retryTimestamp = Date.now() + delayMs;
+    this.nextBackoffRetryMs = retryTimestamp;
+
+    this.currentStatus.retryAttempt = this.consecutiveSyncFailures;
+    this.currentStatus.nextRetryAt = new Date(retryTimestamp);
+    if (reason) {
+      this.currentStatus.lastError = reason;
+    }
+    this.emitStatus();
+
+    if (this.backoffRetryTimer) {
+      clearTimeout(this.backoffRetryTimer);
+    }
+
+    this.backoffRetryTimer = setTimeout(() => {
+      this.backoffRetryTimer = null;
+      this.nextBackoffRetryMs = 0;
+      const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
+      if (onlineNow) {
+        void this.triggerSync(true);
+      }
+    }, delayMs);
+  }
+
+  /**
    * Reset backoff timers on all pending outbox entries when connectivity is restored
    * so queued offline records are pushed immediately on reconnect.
    */
@@ -129,10 +192,11 @@ class SyncEngine {
    */
   public async handleDeviceOnline(): Promise<void> {
     this.currentStatus.isOnline = true;
+    this.clearBackoffRetry();
     this.emitStatus();
 
     await this.resetOutboxBackoffOnReconnect();
-    await this.triggerSync();
+    await this.triggerSync(true);
 
     // Follow-up sync pass 2.5s after interface comes up to handle DHCP/DNS warm-up delay
     if (this.reconnectStabilizeTimer) {
@@ -140,7 +204,7 @@ class SyncEngine {
     }
     this.reconnectStabilizeTimer = setTimeout(() => {
       if (typeof navigator !== 'undefined' && navigator.onLine) {
-        void this.triggerSync();
+        void this.triggerSync(true);
       }
     }, 2500);
   }
@@ -193,6 +257,10 @@ class SyncEngine {
       if (this.reconnectStabilizeTimer) {
         clearTimeout(this.reconnectStabilizeTimer);
         this.reconnectStabilizeTimer = null;
+      }
+      if (this.backoffRetryTimer) {
+        clearTimeout(this.backoffRetryTimer);
+        this.backoffRetryTimer = null;
       }
       this.currentStatus.isOnline = false;
       this.emitStatus();
@@ -348,10 +416,9 @@ class SyncEngine {
         }
       }
 
-      if (onlineNow && !this.isSyncing) {
+      if (onlineNow && !this.isSyncing && Date.now() >= this.nextBackoffRetryMs) {
         await this.updateCounts();
         if (this.currentStatus.unpushedCount > 0) {
-          await this.resetOutboxBackoffOnReconnect();
           void this.triggerSync();
         }
       }
@@ -370,7 +437,8 @@ class SyncEngine {
     this.syncTimer = setInterval(() => {
       const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
       this.currentStatus.isOnline = onlineNow;
-      if (onlineNow && !this.isSyncing) {
+      // Respect active exponential backoff window (5s, 30s, 2m) when a background pull/push failed due to network jitter
+      if (onlineNow && !this.isSyncing && Date.now() >= this.nextBackoffRetryMs) {
         void this.triggerSync();
       }
     }, interval);
@@ -410,7 +478,8 @@ class SyncEngine {
    * - When the user is ONLINE: sends changes directly and immediately to Supabase
    *   in foreign-key dependency order WITHOUT queueing in `db.outbox`.
    * - When the user is OFFLINE (or if a direct online request drops mid-flight):
-   *   queues only the unsent items into `db.outbox` for automatic background retry.
+   *   queues only the unsent items into `db.outbox` for automatic background retry
+   *   at 5s, 30s, and 2m intervals.
    */
   public async pushDirectOrQueue(input: OutboxEntry | OutboxEntry[]): Promise<void> {
     const entries = Array.isArray(input) ? input : [input];
@@ -448,6 +517,7 @@ class SyncEngine {
     ];
 
     const fallbackQueue: OutboxEntry[] = [];
+    const firstRetryDelayMs = this.getBackoffDelayMs(1); // 5s initial retry interval
 
     for (const table of orderedTables) {
       const tableEntries = grouped.get(table) || [];
@@ -471,7 +541,7 @@ class SyncEngine {
               fallbackQueue.push({
                 ...singleEntry,
                 attempts: 1,
-                next_attempt_at: new Date(Date.now() + 5000).toISOString(),
+                next_attempt_at: new Date(Date.now() + firstRetryDelayMs).toISOString(),
                 last_error: singleRes.errors?.[0]?.error || 'Direct sync retry queued',
               });
             }
@@ -479,7 +549,7 @@ class SyncEngine {
             fallbackQueue.push({
               ...singleEntry,
               attempts: 1,
-              next_attempt_at: new Date(Date.now() + 5000).toISOString(),
+              next_attempt_at: new Date(Date.now() + firstRetryDelayMs).toISOString(),
               last_error: singleErr?.message || 'Direct sync retry queued',
             });
           }
@@ -490,7 +560,7 @@ class SyncEngine {
           fallbackQueue.push({
             ...singleEntry,
             attempts: 1,
-            next_attempt_at: new Date(Date.now() + 5000).toISOString(),
+            next_attempt_at: new Date(Date.now() + firstRetryDelayMs).toISOString(),
             last_error: err?.message || 'Network interrupted during direct sync',
           });
         }
@@ -499,6 +569,7 @@ class SyncEngine {
 
     if (fallbackQueue.length > 0) {
       await db.outbox.bulkAdd(fallbackQueue);
+      this.scheduleBackoffRetry(fallbackQueue[0]?.last_error || 'Direct push failed due to network jitter');
     } else {
       this.currentStatus.lastSyncedAt = new Date();
       this.currentStatus.lastError = null;
@@ -518,8 +589,8 @@ class SyncEngine {
 
     await this.updateCounts();
 
-    // If there are any older offline items still waiting in outbox, flush them in the background
-    if (this.currentStatus.unpushedCount > 0 && !this.isSyncing) {
+    // If there are any older offline items still waiting in outbox and not in backoff, flush them in the background
+    if (fallbackQueue.length === 0 && this.currentStatus.unpushedCount > 0 && !this.isSyncing && Date.now() >= this.nextBackoffRetryMs) {
       this.triggerSync().catch(() => {});
     }
   }
@@ -621,7 +692,7 @@ class SyncEngine {
     return clean;
   }
 
-  public async triggerSync(): Promise<void> {
+  public async triggerSync(isRetryOrManual = false): Promise<void> {
     const isOnlineNow =
       typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
     this.currentStatus.isOnline = isOnlineNow;
@@ -629,6 +700,12 @@ class SyncEngine {
     if (!isOnlineNow) {
       await this.updateCounts();
       this.emitStatus();
+      return;
+    }
+
+    // If we are waiting for an exponential backoff retry timer (5s, 30s, 2m) and this is a routine poll,
+    // wait until the scheduled retry interval fires.
+    if (!isRetryOrManual && this.nextBackoffRetryMs > Date.now()) {
       return;
     }
 
@@ -641,29 +718,53 @@ class SyncEngine {
     this.currentStatus.isSyncing = true;
     this.emitStatus();
 
+    let hadSyncFailure = false;
+    let failureReason = '';
+
     try {
       // 1. Clock skew check
       await this.syncClockSkew();
 
       // 2. Push outbox items
-      await this.pushOutbox();
+      const pushResult = await this.pushOutbox();
+      if (pushResult.failedCount > 0) {
+        hadSyncFailure = true;
+        failureReason = pushResult.lastError || 'Outbox push failed due to network jitter';
+      }
 
       // 3. Pull remote updates
-      await this.pullUpdates();
+      const pullResult = await this.pullUpdates();
+      if (pullResult.failedCount > 0) {
+        hadSyncFailure = true;
+        failureReason = failureReason || pullResult.lastError || 'Remote pull failed due to network jitter';
+      }
 
-      this.currentStatus.lastSyncedAt = new Date();
-      this.currentStatus.lastError = null;
+      if (hadSyncFailure) {
+        this.scheduleBackoffRetry(failureReason);
+      } else {
+        this.clearBackoffRetry();
+        this.currentStatus.lastSyncedAt = new Date();
+        this.currentStatus.lastError = null;
+      }
     } catch (err: any) {
-      this.currentStatus.lastError = err?.message || 'Sync error';
+      hadSyncFailure = true;
+      failureReason = err?.message || 'Sync error';
+      this.scheduleBackoffRetry(failureReason);
     } finally {
       this.isSyncing = false;
       this.currentStatus.isSyncing = false;
       await this.updateCounts();
       this.emitStatus();
 
-      if (this.pendingReSync && (typeof navigator === 'undefined' || navigator.onLine)) {
+      if (
+        this.pendingReSync &&
+        !hadSyncFailure &&
+        (typeof navigator === 'undefined' || navigator.onLine)
+      ) {
         this.pendingReSync = false;
         void this.triggerSync();
+      } else if (hadSyncFailure) {
+        this.pendingReSync = false;
       }
     }
   }
@@ -680,8 +781,10 @@ class SyncEngine {
     }
   }
 
-  private async pushOutbox() {
+  private async pushOutbox(): Promise<{ failedCount: number; lastError: string | null }> {
     const nowIso = new Date().toISOString();
+    let failedCount = 0;
+    let lastError: string | null = null;
 
     for (const table of PUSH_ORDER) {
       // Find up to 200 entries for this table ready for attempt
@@ -710,13 +813,19 @@ class SyncEngine {
         }
 
         // If batch returned partial errors, fall back to individual item push
-        await this.pushEntriesIndividually(table, entries);
+        const singleRes = await this.pushEntriesIndividually(table, entries);
+        failedCount += singleRes.failedCount;
+        if (singleRes.lastError) lastError = singleRes.lastError;
       } catch (err: any) {
         // If whole batch network/schema failed, do NOT fail all records at once!
         // Isolate item by item to push every valid record and only back off faulty ones.
-        await this.pushEntriesIndividually(table, entries, err?.message);
+        const singleRes = await this.pushEntriesIndividually(table, entries, err?.message);
+        failedCount += singleRes.failedCount;
+        if (singleRes.lastError) lastError = singleRes.lastError;
       }
     }
+
+    return { failedCount, lastError };
   }
 
   /**
@@ -726,7 +835,10 @@ class SyncEngine {
     table: string,
     entries: OutboxEntry[],
     fallbackErr?: string
-  ) {
+  ): Promise<{ failedCount: number; lastError: string | null }> {
+    let failedCount = 0;
+    let lastError: string | null = null;
+
     for (const entry of entries) {
       try {
         const sanitized = this.sanitizePayload(table, entry.payload);
@@ -738,22 +850,28 @@ class SyncEngine {
           }
         } else {
           const errMsg = singleResult.errors?.[0]?.error || fallbackErr || 'Push failed';
+          failedCount += 1;
+          lastError = errMsg;
           await this.handleFailedEntries([entry], errMsg);
         }
       } catch (itemErr: any) {
-        await this.handleFailedEntries([entry], itemErr?.message || fallbackErr || 'Push failed');
+        const errMsg = itemErr?.message || fallbackErr || 'Push failed';
+        failedCount += 1;
+        lastError = errMsg;
+        await this.handleFailedEntries([entry], errMsg);
       }
     }
+
+    return { failedCount, lastError };
   }
 
   private async handleFailedEntries(entries: OutboxEntry[], errorMessage?: string) {
     const now = Date.now();
     for (const entry of entries) {
       const newAttempts = entry.attempts + 1;
-      // Exponential backoff: min(2^attempts * 1s, 5 min) * (0.5 + Math.random())
-      const baseMs = Math.min(Math.pow(2, newAttempts) * 1000, 300_000);
-      const jitterMs = baseMs * (0.5 + Math.random());
-      const nextAttemptAt = new Date(now + jitterMs).toISOString();
+      // Exponential backoff retry schedule: 5s (attempt 1), 30s (attempt 2), 2m (attempt 3+)
+      const delayMs = this.getBackoffDelayMs(newAttempts);
+      const nextAttemptAt = new Date(now + delayMs).toISOString();
 
       if (entry.seq !== undefined) {
         await db.outbox.update(entry.seq, {
@@ -783,7 +901,8 @@ class SyncEngine {
           });
         }
       }
-      await this.triggerSync();
+      this.clearBackoffRetry();
+      await this.triggerSync(true);
       return { recoveredCount: allOutbox.length };
     }
 
@@ -797,8 +916,9 @@ class SyncEngine {
       }
     }
 
+    this.clearBackoffRetry();
     await this.updateCounts();
-    await this.triggerSync();
+    await this.triggerSync(true);
     return { recoveredCount: deadLetters.length };
   }
 
@@ -835,11 +955,14 @@ class SyncEngine {
     return { clearedCount: deadLetters.length };
   }
 
-  private async pullUpdates() {
+  private async pullUpdates(): Promise<{ failedCount: number; lastError: string | null }> {
     const meta = await db.meta.get('shop_info');
-    if (!meta?.value?.shop_id) return;
+    if (!meta?.value?.shop_id) return { failedCount: 0, lastError: null };
     const shopId = meta.value.shop_id;
     void this.ensureRealtimeSubscription();
+
+    let failedCount = 0;
+    let lastError: string | null = null;
 
     this.pullPassCount++;
     // Force full reconciliation on transactional tables every 3rd pull (~7.5s) or initial pull
@@ -858,85 +981,90 @@ class SyncEngine {
     ]);
 
     for (const table of PUSH_ORDER) {
-      const syncState = await db.sync_state.get(table);
-      const rawCursor = syncState?.last_change_seq || 0;
-      // Overlap safety cursor to prevent missing concurrent commits (§7.4)
-      const safeCursor =
-        forceFullReconcile && CRITICAL_TABLES.has(table)
-          ? 0
-          : Math.max(0, rawCursor - 1000);
+      try {
+        const syncState = await db.sync_state.get(table);
+        const rawCursor = syncState?.last_change_seq || 0;
+        // Overlap safety cursor to prevent missing concurrent commits (§7.4)
+        const safeCursor =
+          forceFullReconcile && CRITICAL_TABLES.has(table)
+            ? 0
+            : Math.max(0, rawCursor - 1000);
 
-      const pullResult = await this.adapter.pullSince(table, shopId, safeCursor, 500);
+        const pullResult = await this.adapter.pullSince(table, shopId, safeCursor, 500);
 
-      if (pullResult.rows && pullResult.rows.length > 0) {
-        if (table === 'shops') {
-          // Update local shop metadata from remote shops record
-          const shopRow = pullResult.rows[0] as Record<string, any>;
-          if (shopRow) {
-            const currentMeta = await db.meta.get('shop_info');
-            const mergedShop = {
-              ...currentMeta?.value,
-              ...shopRow,
-              shop_id: shopRow.id || shopId,
-            };
-            await db.meta.put({
-              key: 'shop_info',
-              value: mergedShop,
+        if (pullResult.rows && pullResult.rows.length > 0) {
+          if (table === 'shops') {
+            // Update local shop metadata from remote shops record
+            const shopRow = pullResult.rows[0] as Record<string, any>;
+            if (shopRow) {
+              const currentMeta = await db.meta.get('shop_info');
+              const mergedShop = {
+                ...currentMeta?.value,
+                ...shopRow,
+                shop_id: shopRow.id || shopId,
+              };
+              await db.meta.put({
+                key: 'shop_info',
+                value: mergedShop,
+              });
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('smartsort_shop_meta_updated', { detail: mergedShop }));
+              }
+            }
+          } else {
+            // Normalize pulled rows for local Dexie compatibility (e.g. deleted_at: null, numeric fields)
+            const normalizedRows = pullResult.rows.map((r: any) => {
+              const row = { ...r };
+              if ('deleted_at' in row || table === 'products' || table === 'customers' || table === 'expenses') {
+                row.deleted_at = row.deleted_at ?? null;
+              }
+              if (table === 'products') {
+                row.is_active = row.is_active ?? true;
+                row.selling_price = Number(row.selling_price || 0);
+                row.buying_price = row.buying_price != null ? Number(row.buying_price) : null;
+                row.low_limit = Number(row.low_limit ?? 5);
+              } else if (table === 'product_stock') {
+                row.qty = Number(row.qty || 0);
+              } else if (table === 'stock_movements') {
+                row.delta = Number(row.delta || 0);
+              } else if (table === 'sales') {
+                row.total = Number(row.total || 0);
+                row.total_profit = Number(row.total_profit || 0);
+                row.item_count = Number(row.item_count || 1);
+                row.recorded_by = row.recorded_by || row.cashier_name || row.created_by_name || undefined;
+              } else if (table === 'sale_items') {
+                row.qty = Number(row.qty || 0);
+                row.unit_price = Number(row.unit_price || 0);
+                row.unit_cost = Number(row.unit_cost || 0);
+                row.line_total = Number(row.line_total || 0);
+                row.line_profit = Number(row.line_profit || 0);
+              } else if (table === 'debts') {
+                row.principal = Number(row.principal || 0);
+                row.amount_paid = Number(row.amount_paid || 0);
+                row.recorded_by = row.recorded_by || row.created_by_name || undefined;
+              } else if (table === 'debt_payments' || table === 'expenses') {
+                row.amount = Number(row.amount || 0);
+              }
+              return row;
             });
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('smartsort_shop_meta_updated', { detail: mergedShop }));
-            }
-          }
-        } else {
-          // Normalize pulled rows for local Dexie compatibility (e.g. deleted_at: null, numeric fields)
-          const normalizedRows = pullResult.rows.map((r: any) => {
-            const row = { ...r };
-            if ('deleted_at' in row || table === 'products' || table === 'customers' || table === 'expenses') {
-              row.deleted_at = row.deleted_at ?? null;
-            }
-            if (table === 'products') {
-              row.is_active = row.is_active ?? true;
-              row.selling_price = Number(row.selling_price || 0);
-              row.buying_price = row.buying_price != null ? Number(row.buying_price) : null;
-              row.low_limit = Number(row.low_limit ?? 5);
-            } else if (table === 'product_stock') {
-              row.qty = Number(row.qty || 0);
-            } else if (table === 'stock_movements') {
-              row.delta = Number(row.delta || 0);
-            } else if (table === 'sales') {
-              row.total = Number(row.total || 0);
-              row.total_profit = Number(row.total_profit || 0);
-              row.item_count = Number(row.item_count || 1);
-              row.recorded_by = row.recorded_by || row.cashier_name || row.created_by_name || undefined;
-            } else if (table === 'sale_items') {
-              row.qty = Number(row.qty || 0);
-              row.unit_price = Number(row.unit_price || 0);
-              row.unit_cost = Number(row.unit_cost || 0);
-              row.line_total = Number(row.line_total || 0);
-              row.line_profit = Number(row.line_profit || 0);
-            } else if (table === 'debts') {
-              row.principal = Number(row.principal || 0);
-              row.amount_paid = Number(row.amount_paid || 0);
-              row.recorded_by = row.recorded_by || row.created_by_name || undefined;
-            } else if (table === 'debt_payments' || table === 'expenses') {
-              row.amount = Number(row.amount || 0);
-            }
-            return row;
-          });
 
-          // Idempotent upsert into local table
-          const targetTable = (db as any)[table];
-          if (targetTable) {
-            await targetTable.bulkPut(normalizedRows);
+            // Idempotent upsert into local table
+            const targetTable = (db as any)[table];
+            if (targetTable) {
+              await targetTable.bulkPut(normalizedRows);
+            }
           }
         }
-      }
 
-      await db.sync_state.put({
-        table,
-        last_change_seq: Math.max(rawCursor, pullResult.maxChangeSeq),
-        last_pull_at: new Date().toISOString(),
-      });
+        await db.sync_state.put({
+          table,
+          last_change_seq: Math.max(rawCursor, pullResult.maxChangeSeq),
+          last_pull_at: new Date().toISOString(),
+        });
+      } catch (pullErr: any) {
+        failedCount += 1;
+        lastError = pullErr?.message || `Pull failed for ${table}`;
+      }
     }
 
     // Also pull staff_attendants table if present on remote so owner & attendants share exact staff names
@@ -979,6 +1107,8 @@ class SyncEngine {
     } catch {
       // ignore
     }
+
+    return { failedCount, lastError };
   }
 
   /**
@@ -1146,6 +1276,44 @@ class SyncEngine {
             await db.debts.bulkPut(Array.from(map.values()));
           }
 
+          // C2. Attendant vault debt payments & expenses
+          const vaultDebtPayments: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_debt_payments') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_debt_payments') || '[]'),
+          ];
+          if (vaultDebtPayments.length > 0) {
+            const map = new Map<string, any>();
+            vaultDebtPayments.forEach((dp) => {
+              if (dp && dp.id) {
+                map.set(dp.id, {
+                  ...dp,
+                  shop_id: shopId,
+                  amount: Number(dp.amount || 0),
+                });
+              }
+            });
+            await db.debt_payments.bulkPut(Array.from(map.values()));
+          }
+
+          const vaultExpenses: any[] = [
+            ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_expenses') || '[]'),
+            ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_expenses') || '[]'),
+          ];
+          if (vaultExpenses.length > 0) {
+            const map = new Map<string, any>();
+            vaultExpenses.forEach((ex) => {
+              if (ex && ex.id) {
+                map.set(ex.id, {
+                  ...ex,
+                  shop_id: shopId,
+                  amount: Number(ex.amount || 0),
+                  deleted_at: ex.deleted_at ?? null,
+                });
+              }
+            });
+            await db.expenses.bulkPut(Array.from(map.values()));
+          }
+
           // D. Attendant users and staff
           const vaultUsers: any[] = [
             ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_users') || '[]'),
@@ -1180,6 +1348,36 @@ class SyncEngine {
         // ignore
       }
 
+      // 5b. Self-heal any existing local Dexie records that had a mismatched shop_id (e.g. 'shop-demo-kenya-001' or old session)
+      // so the Owner's live queries immediately surface 100% of attendant sales, items, debts, and expenses!
+      try {
+        const existingSales = await db.sales.toArray();
+        const mismatchedSales = existingSales.filter((s) => s.shop_id !== shopId);
+        if (mismatchedSales.length > 0) {
+          await db.sales.bulkPut(mismatchedSales.map((s) => ({ ...s, shop_id: shopId })));
+        }
+
+        const existingItems = await db.sale_items.toArray();
+        const mismatchedItems = existingItems.filter((it) => it.shop_id !== shopId);
+        if (mismatchedItems.length > 0) {
+          await db.sale_items.bulkPut(mismatchedItems.map((it) => ({ ...it, shop_id: shopId })));
+        }
+
+        const existingDebts = await db.debts.toArray();
+        const mismatchedDebts = existingDebts.filter((d) => d.shop_id !== shopId);
+        if (mismatchedDebts.length > 0) {
+          await db.debts.bulkPut(mismatchedDebts.map((d) => ({ ...d, shop_id: shopId })));
+        }
+
+        const existingExpenses = await db.expenses.toArray();
+        const mismatchedExpenses = existingExpenses.filter((e) => e.shop_id !== shopId);
+        if (mismatchedExpenses.length > 0) {
+          await db.expenses.bulkPut(mismatchedExpenses.map((e) => ({ ...e, shop_id: shopId })));
+        }
+      } catch {
+        // ignore
+      }
+
       // 6. Recompute stock from ledger
       await recalculateStockFromLedger();
 
@@ -1190,6 +1388,17 @@ class SyncEngine {
       );
 
       const ownerName = (meta?.value?.owner_name || '').trim().toLowerCase();
+      const ownerUserId = meta?.value?.user_id;
+      const localStaff = await getStaffAttendants();
+      const localUsers = await db.users.toArray();
+      const attendantIdSet = new Set<string>();
+      localStaff.forEach((a) => {
+        if (a.id) attendantIdSet.add(a.id);
+      });
+      localUsers.forEach((u) => {
+        if (u.role === 'attendant' && u.id) attendantIdSet.add(u.id);
+      });
+
       const attendantNamesSet = new Set<string>();
       let attendantSalesCount = 0;
       let attendantSalesTotal = 0;
@@ -1199,12 +1408,20 @@ class SyncEngine {
         const role = s.created_by_role;
         const isAttendant =
           role === 'attendant' ||
+          (Boolean(s.created_by) && attendantIdSet.has(s.created_by)) ||
+          (Boolean(s.created_by) &&
+            Boolean(ownerUserId) &&
+            s.created_by !== ownerUserId &&
+            s.created_by !== 'user-owner-001') ||
           (Boolean(rec) &&
             rec.toLowerCase() !== ownerName &&
             rec.toLowerCase() !== 'shop owner' &&
+            rec.toLowerCase() !== 'owner' &&
+            rec.toLowerCase() !== 'mwenye duka' &&
             rec.toLowerCase() !== 'smartsort user');
-        if (isAttendant && rec) {
-          attendantNamesSet.add(rec);
+        if (isAttendant) {
+          const displayName = rec || localStaff[0]?.name || 'Attendant';
+          attendantNamesSet.add(displayName);
           attendantSalesCount++;
           attendantSalesTotal += (s.total || 0);
         }
@@ -1234,6 +1451,7 @@ class SyncEngine {
         // ignore
       }
 
+      this.clearBackoffRetry();
       this.currentStatus.lastSyncedAt = new Date();
       this.currentStatus.lastError = null;
 
@@ -1249,7 +1467,9 @@ class SyncEngine {
         message: 'Successfully pulled and reconciled attendant sales!',
       };
     } catch (err: any) {
-      this.currentStatus.lastError = err?.message || 'Reconciliation failed';
+      const errMsg = err?.message || 'Reconciliation failed';
+      this.currentStatus.lastError = errMsg;
+      this.scheduleBackoffRetry(errMsg);
       throw err;
     } finally {
       this.isSyncing = false;
@@ -1293,32 +1513,67 @@ class SyncEngine {
         }
       }
 
-      // 2. Fetch all local sales, items, and debts regardless of minor shop_id discrepancies
+      // 2. Fetch all local sales, items, debts, payments, and expenses regardless of minor shop_id discrepancies
       const allDbSales = await db.sales.toArray();
       const localSales = allDbSales.filter((s) => s.status === 'completed');
 
       const localItems = await db.sale_items.toArray();
       const localDebts = await db.debts.toArray();
+      const localDebtPayments = await db.debt_payments.toArray();
+      const localExpenses = await db.expenses.toArray();
       const localStockMovements = await db.stock_movements.toArray();
       const localUsers = await db.users.toArray();
       const localStaff = await getStaffAttendants();
       const activeUser = await getShopUser();
 
+      const ownerNameLower = (meta?.value?.owner_name || '').trim().toLowerCase();
+      const ownerId = meta?.value?.user_id;
+
       const attendantName = (
-        activeUser?.name && activeUser.name !== 'Smartsort User'
+        activeUser?.name &&
+        activeUser.name !== 'Smartsort User' &&
+        activeUser.name.trim().toLowerCase() !== ownerNameLower
           ? activeUser.name
-          : localStaff[0]?.name || 'Attendant'
+          : localStaff[0]?.name || activeUser?.name || 'Attendant'
       ).trim();
 
-      // Normalize sales to be tagged with shopId, attendant role, and name
+      const resolvedAttendantId =
+        attendantUserId ||
+        (activeUser?.role === 'attendant' ? activeUser.id : undefined) ||
+        localStaff[0]?.id ||
+        'user-attendant-001';
+
+      // Normalize sales: preserve owner attribution for sales explicitly recorded by owner,
+      // and tag attendant sales with full attendant metadata so owner reports never misclassify them
       const normalizedSales = localSales.map((s) => {
         const copy: any = { ...s };
         copy.shop_id = shopId;
-        copy.created_by_role = 'attendant';
-        copy.recorded_by = copy.recorded_by || copy.cashier_name || attendantName;
-        copy.cashier_name = copy.cashier_name || attendantName;
-        copy.created_by_name = copy.created_by_name || attendantName;
-        copy.created_by = attendantUserId || copy.created_by || activeUser?.id || 'user-attendant-001';
+
+        const existingRec = (copy.recorded_by || copy.cashier_name || copy.created_by_name || '').trim();
+        const isExplicitOwnerSale =
+          copy.created_by_role === 'owner' &&
+          Boolean(ownerId && copy.created_by === ownerId) &&
+          existingRec.toLowerCase() === ownerNameLower &&
+          Boolean(ownerNameLower);
+
+        if (!isExplicitOwnerSale) {
+          copy.created_by_role = 'attendant';
+          const cleanRec =
+            existingRec &&
+            existingRec.toLowerCase() !== 'smartsort user' &&
+            existingRec.toLowerCase() !== 'owner' &&
+            existingRec.toLowerCase() !== 'shop owner' &&
+            existingRec.toLowerCase() !== ownerNameLower
+              ? existingRec
+              : attendantName;
+          copy.recorded_by = cleanRec;
+          copy.cashier_name = cleanRec;
+          copy.created_by_name = cleanRec;
+          copy.created_by =
+            copy.created_by && copy.created_by !== ownerId && copy.created_by !== 'user-owner-001'
+              ? copy.created_by
+              : resolvedAttendantId;
+        }
         return copy;
       });
 
@@ -1330,8 +1585,20 @@ class SyncEngine {
       const normalizedDebts = localDebts.map((d) => ({
         ...d,
         shop_id: shopId,
-        created_by_role: 'attendant',
+        created_by_role: d.created_by_role || 'attendant',
         recorded_by: d.recorded_by || attendantName,
+        created_by_name: d.created_by_name || d.recorded_by || attendantName,
+      }));
+
+      const normalizedDebtPayments = localDebtPayments.map((dp) => ({
+        ...dp,
+        shop_id: shopId,
+      }));
+
+      const normalizedExpenses = localExpenses.map((ex) => ({
+        ...ex,
+        shop_id: shopId,
+        recorded_by: ex.recorded_by || attendantName,
       }));
 
       const normalizedMovements = localStockMovements.map((m) => ({
@@ -1339,17 +1606,40 @@ class SyncEngine {
         shop_id: shopId,
       }));
 
-      // Store in dedicated attendant sync vault for 100% reliable local/remote transfer
+      // Persist normalized records back to local Dexie so attendant's own local DB has consistent attribution
+      if (normalizedSales.length > 0) await db.sales.bulkPut(normalizedSales);
+      if (normalizedItems.length > 0) await db.sale_items.bulkPut(normalizedItems);
+      if (normalizedDebts.length > 0) await db.debts.bulkPut(normalizedDebts);
+
+      // Merge into dedicated attendant sync vault (never overwrite records from other attendants!)
       try {
         if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('smartsort_attendant_vault_sales', JSON.stringify(normalizedSales));
-          localStorage.setItem('smartsort_attendant_vault_items', JSON.stringify(normalizedItems));
-          localStorage.setItem('smartsort_attendant_vault_debts', JSON.stringify(normalizedDebts));
+          const mergeVault = (key: string, incoming: any[]) => {
+            const existing: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+            const map = new Map<string, any>();
+            if (Array.isArray(existing)) {
+              existing.forEach((r) => {
+                if (r && r.id) map.set(String(r.id), r);
+              });
+            }
+            incoming.forEach((r) => {
+              if (r && r.id) {
+                map.set(String(r.id), { ...(map.get(String(r.id)) || {}), ...r });
+              }
+            });
+            localStorage.setItem(key, JSON.stringify(Array.from(map.values())));
+          };
+
+          mergeVault('smartsort_attendant_vault_sales', normalizedSales);
+          mergeVault('smartsort_attendant_vault_items', normalizedItems);
+          mergeVault('smartsort_attendant_vault_debts', normalizedDebts);
+          mergeVault('smartsort_attendant_vault_debt_payments', normalizedDebtPayments);
+          mergeVault('smartsort_attendant_vault_expenses', normalizedExpenses);
           if (localUsers.length > 0) {
-            localStorage.setItem('smartsort_attendant_vault_users', JSON.stringify(localUsers));
+            mergeVault('smartsort_attendant_vault_users', localUsers);
           }
           if (localStaff.length > 0) {
-            localStorage.setItem('smartsort_attendant_vault_staff', JSON.stringify(localStaff));
+            mergeVault('smartsort_attendant_vault_staff', localStaff);
           }
         }
       } catch {
@@ -1368,6 +1658,18 @@ class SyncEngine {
       if (normalizedDebts.length > 0) {
         const sanitizedDebts = normalizedDebts.map((d) => this.sanitizePayload('debts', d as any));
         await this.adapter.pushBatch('debts', sanitizedDebts);
+      }
+      if (normalizedDebtPayments.length > 0) {
+        const sanitizedDp = normalizedDebtPayments.map((dp) =>
+          this.sanitizePayload('debt_payments', dp as any)
+        );
+        await this.adapter.pushBatch('debt_payments', sanitizedDp);
+      }
+      if (normalizedExpenses.length > 0) {
+        const sanitizedExp = normalizedExpenses.map((ex) =>
+          this.sanitizePayload('expenses', ex as any)
+        );
+        await this.adapter.pushBatch('expenses', sanitizedExp);
       }
       if (normalizedMovements.length > 0) {
         const sanitizedMovs = normalizedMovements.map((m) =>
@@ -1396,7 +1698,7 @@ class SyncEngine {
               type: 'ATTENDANT_SALES_PUSHED',
               timestamp: Date.now(),
               shopId,
-              attendantUserId,
+              attendantUserId: resolvedAttendantId,
               pushedSalesCount: normalizedSales.length,
             });
           }
@@ -1410,6 +1712,7 @@ class SyncEngine {
         // ignore
       }
 
+      this.clearBackoffRetry();
       this.currentStatus.lastSyncedAt = new Date();
       this.currentStatus.lastError = null;
 
@@ -1422,7 +1725,9 @@ class SyncEngine {
         message: 'All sales and transactions successfully pushed to the owner!',
       };
     } catch (err: any) {
-      this.currentStatus.lastError = err?.message || 'Push failed';
+      const errMsg = err?.message || 'Push failed';
+      this.currentStatus.lastError = errMsg;
+      this.scheduleBackoffRetry(errMsg);
       throw err;
     } finally {
       this.isSyncing = false;

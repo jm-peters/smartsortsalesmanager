@@ -2468,20 +2468,46 @@ export function resolveSaleCashierDisplay(
     }
   }
 
-  // 3. Check if created_by matches shop owner user_id
+  // 2b. Also check if rawName matches any attendant name in usersMap
+  if (rawName && !rawRole && usersMap) {
+    const lowerRaw = rawName.toLowerCase();
+    for (const u of usersMap.values()) {
+      if (u.name && u.name.trim().toLowerCase() === lowerRaw && u.role === 'attendant') {
+        rawRole = 'attendant';
+        break;
+      }
+    }
+  }
+
+  // 3. Check if created_by or rawName matches shop owner vs attendant
   if (shop) {
+    const ownerNameClean = (shop.owner_name || '').trim().toLowerCase();
+    const isNameClearlyAttendant =
+      Boolean(rawName) &&
+      rawName.toLowerCase() !== ownerNameClean &&
+      rawName.toLowerCase() !== 'owner' &&
+      rawName.toLowerCase() !== 'shop owner' &&
+      rawName.toLowerCase() !== 'mwenye duka';
+
     const isShopOwnerId =
       sale.created_by === shop.user_id ||
       sale.created_by === 'user-owner-001' ||
       sale.created_by === 'user-admin-001' ||
       rawRole === 'owner';
 
-    if (isShopOwnerId && rawRole !== 'attendant') {
+    if (isNameClearlyAttendant && rawRole !== 'owner') {
+      rawRole = 'attendant';
+    } else if (isShopOwnerId && rawRole !== 'attendant') {
       if (!rawName && shop.owner_name && shop.owner_name.toLowerCase() !== 'smartsort user') {
         rawName = shop.owner_name.trim();
       }
       if (!rawRole) rawRole = 'owner';
     } else if (!rawRole && sale.created_by && sale.created_by !== shop.user_id) {
+      rawRole = 'attendant';
+    }
+  } else if (!rawRole && rawName) {
+    const lower = rawName.toLowerCase();
+    if (lower !== 'owner' && lower !== 'shop owner' && lower !== 'mwenye duka') {
       rawRole = 'attendant';
     }
   }
@@ -2495,12 +2521,20 @@ export function resolveSaleCashierDisplay(
     ? 'Owner'
     : 'Mwenye Duka';
 
+  let fallbackAttendantName = isEn ? 'Attendant' : 'Mhudumu';
+  if (isAttendant && !rawName && usersMap) {
+    for (const u of usersMap.values()) {
+      if (u.role === 'attendant' && u.name && u.name.toLowerCase() !== 'smartsort user') {
+        fallbackAttendantName = u.name;
+        break;
+      }
+    }
+  }
+
   const finalName =
     rawName ||
     (isAttendant
-      ? isEn
-        ? 'Attendant'
-        : 'Mhudumu'
+      ? fallbackAttendantName
       : (shop?.owner_name && shop.owner_name.toLowerCase() !== 'smartsort user'
           ? shop.owner_name
           : isEn

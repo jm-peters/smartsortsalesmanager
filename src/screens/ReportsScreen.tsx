@@ -310,14 +310,12 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const matchesTargetShop = (recordShopId?: string | null) => {
     if (!targetShopId || !recordShopId) return true;
     if (targetShopId === 'all') {
-      return branchShopIdsSet.size > 0 ? branchShopIdsSet.has(recordShopId) : true;
+      return branchShopIdsSet.size > 1 ? branchShopIdsSet.has(recordShopId) : true;
     }
     if (recordShopId === targetShopId) return true;
-    // For single shop owners, match records with default demo shop ID or current shop ID
+    // For single shop owners/attendants, never hide local/pulled records due to minor shop_id discrepancies
     if (ownerBranches.length <= 1) {
-      if (recordShopId === 'shop-demo-kenya-001' || targetShopId === 'shop-demo-kenya-001') {
-        return true;
-      }
+      return true;
     }
     return false;
   };
