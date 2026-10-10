@@ -78,14 +78,27 @@ export const RecentTransactionsSection: React.FC<RecentTransactionsSectionProps>
   const activeShopId = shopMeta?.shop_id;
   const recentSales = useLiveQuery(
     async () => {
-      const all = await db.sales.orderBy('created_at').reverse().limit(60).toArray();
-      const shopScoped = all.filter((s) => !activeShopId || !s.shop_id || s.shop_id === activeShopId);
-      const filtered = isOwner
-        ? shopScoped
-        : shopScoped.filter((s) => !loggedInUser || s.created_by === loggedInUser.id);
+      const all = await db.sales.orderBy('created_at').reverse().limit(100).toArray();
+      const filtered = all.filter((s) => {
+        if (isOwner) return true;
+        if (!loggedInUser) return true;
+        const cashierInfo = resolveSaleCashierDisplay(s, usersMap, shopMeta, isEn);
+        const myId = loggedInUser.id?.trim().toLowerCase();
+        const myName = loggedInUser.name?.trim().toLowerCase();
+        const rec = s.recorded_by?.trim().toLowerCase();
+        const createdBy = s.created_by?.trim().toLowerCase();
+        const createdByName = s.created_by_name?.trim().toLowerCase();
+        const cashierName = cashierInfo.name?.trim().toLowerCase();
+        return (
+          (Boolean(myId) && (createdBy === myId || s.created_by === loggedInUser.id)) ||
+          (Boolean(myName) && (rec === myName || createdByName === myName || cashierName === myName)) ||
+          s.created_by_role === 'attendant' ||
+          cashierInfo.isAttendant
+        );
+      });
       return filtered.slice(0, 5);
     },
-    [isOwner, loggedInUser?.id, activeShopId]
+    [isOwner, loggedInUser?.id, loggedInUser?.name, activeShopId, usersMap, shopMeta, isEn]
   ) || [];
 
   // Fetch sale items corresponding to the last 5 sales

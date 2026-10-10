@@ -1344,6 +1344,10 @@ export async function recordSale(saleData: {
     cash_session_id: activeSession.id,
   };
 
+  for (const sm of stockMovements) {
+    sm.created_by = creatorId;
+  }
+
   // Perform transactional atomic write in Dexie
   await db.transaction(
     'rw',
@@ -1446,6 +1450,37 @@ export async function recordSale(saleData: {
       }
     }
   );
+
+  // Immediately persist to shared local vault so same-browser/cross-tab/role-switch sync has zero latency or omission
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const appendVault = (key: string, itemsToAdd: any[]) => {
+        if (!itemsToAdd.length) return;
+        const existing: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+        const map = new Map<string, any>();
+        if (Array.isArray(existing)) {
+          existing.forEach((r) => {
+            if (r && r.id) map.set(String(r.id), r);
+          });
+        }
+        itemsToAdd.forEach((r) => {
+          if (r && r.id) map.set(String(r.id), { ...(map.get(String(r.id)) || {}), ...r });
+        });
+        localStorage.setItem(key, JSON.stringify(Array.from(map.values())));
+      };
+      appendVault('smartsort_attendant_vault_sales', [saleHeader]);
+      appendVault('smartsort_cloud_mock_sales', [saleHeader]);
+      appendVault('smartsort_attendant_vault_items', saleItems);
+      appendVault('smartsort_cloud_mock_sale_items', saleItems);
+      if (debtRecord) {
+        appendVault('smartsort_attendant_vault_debts', [debtRecord]);
+        appendVault('smartsort_cloud_mock_debts', [debtRecord]);
+      }
+      localStorage.setItem('smartsort_reports_pulse', String(Date.now()));
+    }
+  } catch {
+    // ignore
+  }
 
   // 5. Direct online write-through to Supabase (or queue in outbox if offline)
   void syncWriteThrough(outboxEntries);

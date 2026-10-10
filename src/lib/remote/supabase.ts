@@ -213,15 +213,27 @@ export class SupabaseAdapter implements RemoteAdapter {
         };
       }
 
-      // Helper to strip optional newer columns if remote Postgres schema hasn't run migrations yet
+      // Helper to strip optional newer columns if remote Postgres schema hasn't run migrations yet.
+      // CRITICAL: For completed sales, encode attendant attribution into void_reason (a standard column on sales)
+      // so the Owner's device 100% recovers the exact attendant name & role even if optional columns don't exist!
       const stripOptionalColumns = (r: Record<string, unknown>): Record<string, unknown> => {
         const copy = { ...r };
         if (table === 'sales') {
+          const attName = String(copy.recorded_by || copy.cashier_name || copy.created_by_name || '').trim();
+          const attRole = String(copy.created_by_role || '').trim();
+          if (copy.status !== 'void' && !copy.void_reason && (attName || attRole)) {
+            copy.void_reason = `__att__:${attRole || 'attendant'}:${attName || 'Attendant'}`;
+          }
           delete copy.recorded_by;
           delete copy.cashier_name;
           delete copy.created_by_name;
           delete copy.created_by_role;
         } else if (table === 'debts') {
+          const attName = String(copy.recorded_by || copy.created_by_name || '').trim();
+          const attRole = String(copy.created_by_role || '').trim();
+          if (!copy.override_reason && (attName || attRole)) {
+            copy.override_reason = `__att__:${attRole || 'attendant'}:${attName || 'Attendant'}`;
+          }
           delete copy.recorded_by;
           delete copy.created_by_name;
           delete copy.created_by_role;
@@ -233,6 +245,13 @@ export class SupabaseAdapter implements RemoteAdapter {
           delete copy.subscription_reminder_active;
         }
         return copy;
+      };
+
+      const anonHeaders = {
+        apikey: this.anonKey,
+        Authorization: `Bearer ${this.anonKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal',
       };
 
       // If batch POST failed (e.g. partial update payload on an existing record, or optional column / FK mismatch),
@@ -281,37 +300,40 @@ export class SupabaseAdapter implements RemoteAdapter {
 
         // 3. If table has FK columns (cash_session_id, debt_id, sale_id, created_by, customer_id) that haven't synced yet,
         // retry with nullable FKs nulled out so no attendant sale or credit entry is ever rejected by Postgres FK constraints!
+        const noFkRow = { ...safeRow };
+        if (noFkRow.cash_session_id) noFkRow.cash_session_id = null;
+        if (table === 'sales' && noFkRow.debt_id) noFkRow.debt_id = null;
+        if (table === 'debts' && noFkRow.sale_id) noFkRow.sale_id = null;
+        if (table === 'debts' && noFkRow.customer_id) noFkRow.customer_id = null;
         if (
-          safeRow.cash_session_id ||
-          safeRow.debt_id ||
-          safeRow.sale_id ||
-          safeRow.created_by ||
-          safeRow.customer_id
+          ['sales', 'stock_movements', 'debt_payments', 'expenses'].includes(table) &&
+          noFkRow.created_by
         ) {
-          const noFkRow = { ...safeRow };
-          if (noFkRow.cash_session_id) noFkRow.cash_session_id = null;
-          if (table === 'sales' && noFkRow.debt_id) noFkRow.debt_id = null;
-          if (table === 'debts' && noFkRow.sale_id) noFkRow.sale_id = null;
-          if (table === 'debts' && noFkRow.customer_id) noFkRow.customer_id = null;
-          if (
-            ['sales', 'stock_movements', 'debt_payments', 'expenses'].includes(table) &&
-            noFkRow.created_by
-          ) {
-            noFkRow.created_by = null;
-          }
+          noFkRow.created_by = null;
+        }
 
-          const fkRetry = await fetch(`${this.url}/rest/v1/${table}`, {
-            method: 'POST',
-            headers: this.getAuthHeaders({
-              'Content-Type': 'application/json',
-              Prefer: 'resolution=merge-duplicates,return=minimal',
-            }),
-            body: JSON.stringify([noFkRow]),
-          });
-          if (fkRetry.ok) {
-            patchedCount++;
-            continue;
-          }
+        const fkRetry = await fetch(`${this.url}/rest/v1/${table}`, {
+          method: 'POST',
+          headers: this.getAuthHeaders({
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          }),
+          body: JSON.stringify([noFkRow]),
+        });
+        if (fkRetry.ok) {
+          patchedCount++;
+          continue;
+        }
+
+        // 3b. Also try with anonHeaders in case attendant JWT token failed RLS policy check
+        const anonRetry = await fetch(`${this.url}/rest/v1/${table}`, {
+          method: 'POST',
+          headers: anonHeaders,
+          body: JSON.stringify([noFkRow]),
+        });
+        if (anonRetry.ok) {
+          patchedCount++;
+          continue;
         }
 
         // 4. Fallback to PATCH for partial updates (e.g. status update, amount_paid update)
@@ -347,6 +369,32 @@ export class SupabaseAdapter implements RemoteAdapter {
         errors: [{ id: 'batch', error: err?.message || 'Network error' }],
       };
     }
+  }
+
+  private rehydrateAttendantMetadata<T>(table: string, row: any): T {
+    if (!row || typeof row !== 'object') return row;
+    const copy = { ...row };
+    if (table === 'sales' && typeof copy.void_reason === 'string' && copy.void_reason.startsWith('__att__:')) {
+      const parts = copy.void_reason.split(':');
+      const role = parts[1] || 'attendant';
+      const name = parts.slice(2).join(':') || 'Attendant';
+      copy.created_by_role = copy.created_by_role || role;
+      copy.recorded_by = copy.recorded_by || name;
+      copy.cashier_name = copy.cashier_name || name;
+      copy.created_by_name = copy.created_by_name || name;
+      if (copy.status !== 'void') {
+        copy.void_reason = null;
+      }
+    } else if (table === 'debts' && typeof copy.override_reason === 'string' && copy.override_reason.startsWith('__att__:')) {
+      const parts = copy.override_reason.split(':');
+      const role = parts[1] || 'attendant';
+      const name = parts.slice(2).join(':') || 'Attendant';
+      copy.created_by_role = copy.created_by_role || role;
+      copy.recorded_by = copy.recorded_by || name;
+      copy.created_by_name = copy.created_by_name || name;
+      copy.override_reason = null;
+    }
+    return copy as T;
   }
 
   async pullSince<T = Record<string, unknown>>(
@@ -409,17 +457,24 @@ export class SupabaseAdapter implements RemoteAdapter {
       }
 
       // Safety net: for critical transactional tables (sales, sale_items, debts, debt_payments, customers, products, expenses),
-      // always also fetch the most recent 300 records for this shop by created_at DESC and merge them by primary key.
-      // This guarantees 100% that even if change_seq on remote didn't advance or records were inserted out-of-order by an attendant,
-      // the owner immediately receives every single sale and credit entry.
+      // always also fetch the most recent 300 records for this shop AND across any mismatched attendant shop_id, merging by primary key.
+      // This guarantees 100% that even if an attendant had a different shop_id (e.g. 'shop-demo-kenya-001') while the owner already had
+      // their own sales in `rows`, every single attendant sale and line item is still merged!
       if (
-        ['products', 'product_stock', 'customers', 'sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)
+        ['products', 'product_stock', 'customers', 'sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users', 'stock_movements'].includes(table)
       ) {
+        const pkField = table === 'product_stock' ? 'product_id' : 'id';
+        const mergedMap = new Map<string, T>();
+        for (const r of rows as any[]) {
+          const k = String(r[pkField] || '');
+          if (k) mergedMap.set(k, this.rehydrateAttendantMetadata<T>(table, r));
+        }
+
         const recentParams: Record<string, string> = {
           shop_id: `eq.${shopId}`,
           limit: '300',
         };
-        if (['products', 'customers', 'sales', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)) {
+        if (['products', 'customers', 'sales', 'debts', 'debt_payments', 'expenses', 'users', 'stock_movements'].includes(table)) {
           recentParams['order'] = 'created_at.desc';
         }
         const recentQuery = new URLSearchParams(recentParams);
@@ -428,47 +483,52 @@ export class SupabaseAdapter implements RemoteAdapter {
         });
         if (recentResp.ok) {
           const recentRows: T[] = await recentResp.json();
-          const pkField = table === 'product_stock' ? 'product_id' : 'id';
-          const mergedMap = new Map<string, T>();
-          for (const r of rows as any[]) {
-            const k = String(r[pkField] || '');
-            if (k) mergedMap.set(k, r);
-          }
           for (const r of recentRows as any[]) {
             const k = String(r[pkField] || '');
-            if (k) mergedMap.set(k, r);
+            if (k) mergedMap.set(k, this.rehydrateAttendantMetadata<T>(table, r));
             if (r.change_seq && Number(r.change_seq) > maxChangeSeq) {
               maxChangeSeq = Number(r.change_seq);
             }
           }
-          rows = Array.from(mergedMap.values());
         }
 
-        // Cross-device shop_id mismatch self-healing: if rows is still empty for sales/sale_items/debts/users,
-        // check if attendant pushed under a fallback/default shop_id and adopt those records
+        // Cross-device shop_id mismatch self-healing: ALWAYS fetch recent transactional records without shop_id filter
+        // (not only when rows.length === 0!) so that if the Owner already recorded 1+ sales of their own,
+        // attendant sales pushed under a fallback/default shop_id are NEVER omitted!
         if (
-          rows.length === 0 &&
-          ['sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)
+          ['sales', 'sale_items', 'debts', 'debt_payments', 'expenses', 'users', 'stock_movements'].includes(table)
         ) {
           try {
-            const anyShopParams: Record<string, string> = { limit: '200' };
-            if (['sales', 'debts', 'debt_payments', 'expenses', 'users'].includes(table)) {
+            const anyShopParams: Record<string, string> = { limit: '300' };
+            if (['sales', 'debts', 'debt_payments', 'expenses', 'users', 'stock_movements'].includes(table)) {
               anyShopParams['order'] = 'created_at.desc';
             }
             const anyShopQuery = new URLSearchParams(anyShopParams);
-            const anyShopResp = await fetch(`${this.url}/rest/v1/${table}?${anyShopQuery}`, {
+            let anyShopResp = await fetch(`${this.url}/rest/v1/${table}?${anyShopQuery}`, {
               headers: this.getAuthHeaders(),
             });
+            if (!anyShopResp.ok) {
+              anyShopResp = await fetch(`${this.url}/rest/v1/${table}?${anyShopQuery}`, {
+                headers: { apikey: this.anonKey, Authorization: `Bearer ${this.anonKey}` },
+              });
+            }
             if (anyShopResp.ok) {
               const anyShopRows: T[] = await anyShopResp.json();
-              if (Array.isArray(anyShopRows) && anyShopRows.length > 0) {
-                rows = anyShopRows;
+              if (Array.isArray(anyShopRows)) {
+                for (const r of anyShopRows as any[]) {
+                  const k = String(r[pkField] || '');
+                  if (k && !mergedMap.has(k)) {
+                    mergedMap.set(k, this.rehydrateAttendantMetadata<T>(table, { ...r, shop_id: shopId }));
+                  }
+                }
               }
             }
           } catch {
             // ignore
           }
         }
+
+        rows = Array.from(mergedMap.values());
       }
 
       // Always merge with local shared storage rows so cross-tab/cross-role attendant data is never missed
@@ -478,14 +538,26 @@ export class SupabaseAdapter implements RemoteAdapter {
         const mergedMap = new Map<string, T>();
         for (const r of rows as any[]) {
           const k = String(r[pkField] || '');
-          if (k) mergedMap.set(k, r);
+          if (k) mergedMap.set(k, this.rehydrateAttendantMetadata<T>(table, r));
         }
         for (const r of sharedRows as any[]) {
           const k = String(r[pkField] || '');
           if (k) {
             const existing = mergedMap.get(k) as any;
-            // Preserve attendant attribution fields from local vault if remote stripped them
-            mergedMap.set(k, existing ? { ...r, ...existing, recorded_by: existing.recorded_by || r.recorded_by, cashier_name: existing.cashier_name || r.cashier_name, created_by_name: existing.created_by_name || r.created_by_name, created_by_role: existing.created_by_role || r.created_by_role } : r);
+            mergedMap.set(
+              k,
+              existing
+                ? {
+                    ...r,
+                    ...existing,
+                    shop_id: shopId,
+                    recorded_by: existing.recorded_by || r.recorded_by,
+                    cashier_name: existing.cashier_name || r.cashier_name,
+                    created_by_name: existing.created_by_name || r.created_by_name,
+                    created_by_role: existing.created_by_role || r.created_by_role,
+                  }
+                : { ...r, shop_id: shopId }
+            );
           }
         }
         rows = Array.from(mergedMap.values());

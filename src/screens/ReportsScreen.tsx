@@ -258,10 +258,15 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     }
   };
 
-  // Trigger an immediate sync pass when ReportsScreen opens so the Owner always sees 100% up-to-date sales from all attendants
+  // Trigger an immediate sync & attendant reconciliation pass when ReportsScreen opens or role changes
+  // so the Owner always sees 100% up-to-date sales from all attendants without omissions
   useEffect(() => {
-    void syncEngine.triggerSync();
-  }, [activeTab, datePeriod, shopMeta?.shop_id]);
+    if (isOwner) {
+      void syncEngine.reconcileAllAttendantSales(shopMeta?.shop_id).catch(() => {});
+    } else {
+      void syncEngine.triggerSync(true);
+    }
+  }, [activeTab, datePeriod, shopMeta?.shop_id, isOwner]);
 
   // Build lookup map of user ID -> { name, role } across users table, staff_attendants, and active user
   const usersMap = useMemo(() => {
