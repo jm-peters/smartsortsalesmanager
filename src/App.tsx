@@ -362,8 +362,13 @@ export default function App() {
 
           {currentTab === 'settings' && (
             <SettingsScreen
-              userRole={userRole}
-              onChangeRole={setUserRole}
+              userRole={user.role === 'attendant' ? 'attendant' : userRole}
+              onChangeRole={(nextRole) => {
+                if (user.role === 'attendant' && nextRole === 'owner') {
+                  return;
+                }
+                setUserRole(nextRole);
+              }}
               language={language}
               onChangeLanguage={setLanguage}
               shopName={shopName}

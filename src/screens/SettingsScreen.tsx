@@ -547,7 +547,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         )}
 
-        {/* Staff Role Switcher (§8.F) */}
+        {/* Staff Role Display & Owner Preview Switcher (§8.F) */}
         <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-bold text-sm text-slate-800">
@@ -563,47 +563,60 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </span>
           </div>
 
-          <p className="text-xs text-slate-500">
-            {isEn
-              ? 'Shop Owner sees profits, wholesale costs, and can authorize customer credit overrides. Attendant sees only selling prices and cashier operations.'
-              : 'Mwenye duka anaona faida, gharama za kununua, na anaweza kuruhusu mkopo uliozidi. Mhudumu anaona tu bei za kuuza na rekodi za mauzo.'}
-          </p>
+          {currentUser?.role === 'owner' || isOwner ? (
+            <>
+              <p className="text-xs text-slate-500">
+                {isEn
+                  ? 'Shop Owner sees profits, wholesale costs, and can authorize customer credit overrides. You can preview Attendant mode below.'
+                  : 'Mwenye duka anaona faida, gharama za kununua, na anaweza kuruhusu mkopo uliozidi. Unaweza kujaribu mwonekano wa Mhudumu hapa chini.'}
+              </p>
 
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={async () => {
-                onChangeRole('owner');
-                const u = await getShopUser();
-                if (u) await saveShopUser({ role: 'owner' });
-              }}
-              className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
-                isOwner
-                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 shadow-xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <Shield className="w-5 h-5 text-blue-600" />
-              <span>{isEn ? 'Shop Owner' : 'Mwenye Duka (Owner)'}</span>
-            </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (currentUser && currentUser.role !== 'owner') return;
+                    onChangeRole('owner');
+                  }}
+                  className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
+                    isOwner
+                      ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Shield className="w-5 h-5 text-blue-600" />
+                  <span>{isEn ? 'Shop Owner' : 'Mwenye Duka (Owner)'}</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={async () => {
-                onChangeRole('attendant');
-                const u = await getShopUser();
-                if (u) await saveShopUser({ role: 'attendant' });
-              }}
-              className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
-                !isOwner
-                  ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 shadow-xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <Smartphone className="w-5 h-5 text-slate-600" />
-              <span>{isEn ? 'Attendant' : 'Mhudumu (Attendant)'}</span>
-            </button>
-          </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    onChangeRole('attendant');
+                  }}
+                  className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
+                    !isOwner
+                      ? 'bg-blue-50 border-blue-500 text-blue-900 ring-2 ring-blue-500/20 shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Smartphone className="w-5 h-5 text-slate-600" />
+                  <span>{isEn ? 'Attendant (Preview)' : 'Mhudumu (Preview)'}</span>
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+              <div className="text-xs text-slate-600 leading-relaxed">
+                <span className="font-bold text-slate-800 block mb-0.5">
+                  {isEn ? 'Attendant Account (Role Locked)' : 'Akaunti ya Mhudumu (Imefungwa)'}
+                </span>
+                {isEn
+                  ? 'You are signed in as a Shop Attendant. Role switching to Shop Owner is disabled for security. Only the registered Shop Owner account can access owner controls.'
+                  : 'Umeingia kama Mhudumu wa Duka. Kubadilisha nafasi kuwa Mwenye Duka kumezuiwa kwa usalama wa duka.'}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Language Switcher */}

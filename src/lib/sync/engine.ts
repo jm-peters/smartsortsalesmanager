@@ -980,13 +980,23 @@ class SyncEngine {
       'expenses',
     ]);
 
+    const ALWAYS_FULL_PULL_TABLES = new Set([
+      'sales',
+      'sale_items',
+      'debts',
+      'debt_payments',
+      'expenses',
+    ]);
+
     for (const table of PUSH_ORDER) {
       try {
         const syncState = await db.sync_state.get(table);
         const rawCursor = syncState?.last_change_seq || 0;
-        // Overlap safety cursor to prevent missing concurrent commits (§7.4)
+        // Overlap safety cursor to prevent missing concurrent commits (§7.4).
+        // For sales, sale_items, debts, debt_payments, and expenses, always query from cursor 0
+        // so the very first attendant transaction is never skipped by cursor advancement!
         const safeCursor =
-          forceFullReconcile && CRITICAL_TABLES.has(table)
+          ALWAYS_FULL_PULL_TABLES.has(table) || (forceFullReconcile && CRITICAL_TABLES.has(table))
             ? 0
             : Math.max(0, rawCursor - 1000);
 
@@ -1015,6 +1025,9 @@ class SyncEngine {
             // Normalize pulled rows for local Dexie compatibility (e.g. deleted_at: null, numeric fields)
             const normalizedRows = pullResult.rows.map((r: any) => {
               const row = { ...r };
+              if (ALWAYS_FULL_PULL_TABLES.has(table)) {
+                row.shop_id = shopId;
+              }
               if ('deleted_at' in row || table === 'products' || table === 'customers' || table === 'expenses') {
                 row.deleted_at = row.deleted_at ?? null;
               }
@@ -1031,6 +1044,7 @@ class SyncEngine {
                 row.total = Number(row.total || 0);
                 row.total_profit = Number(row.total_profit || 0);
                 row.item_count = Number(row.item_count || 1);
+                row.status = row.status || 'completed';
                 row.recorded_by = row.recorded_by || row.cashier_name || row.created_by_name || undefined;
               } else if (table === 'sale_items') {
                 row.qty = Number(row.qty || 0);

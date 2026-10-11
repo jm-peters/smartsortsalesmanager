@@ -298,10 +298,11 @@ export class SupabaseAdapter implements RemoteAdapter {
           continue;
         }
 
-        // 3. If table has FK columns (cash_session_id, debt_id, sale_id, created_by, customer_id) that haven't synced yet,
-        // retry with nullable FKs nulled out so no attendant sale or credit entry is ever rejected by Postgres FK constraints!
+        // 3. If table has FK columns (cash_session_id, debt_id, sale_id, created_by, customer_id, shop_user_id) that haven't synced yet,
+        // retry with nullable FKs nulled out so no attendant sale, cash session, or credit entry is ever rejected by Postgres FK constraints!
         const noFkRow = { ...safeRow };
         if (noFkRow.cash_session_id) noFkRow.cash_session_id = null;
+        if (table === 'cash_sessions' && noFkRow.shop_user_id) noFkRow.shop_user_id = null;
         if (table === 'sales' && noFkRow.debt_id) noFkRow.debt_id = null;
         if (table === 'debts' && noFkRow.sale_id) noFkRow.sale_id = null;
         if (table === 'debts' && noFkRow.customer_id) noFkRow.customer_id = null;
@@ -334,6 +335,24 @@ export class SupabaseAdapter implements RemoteAdapter {
         if (anonRetry.ok) {
           patchedCount++;
           continue;
+        }
+
+        // 3c. If this is the attendant's first sale (e.g. sale_no = 1) and the remote Postgres table has a UNIQUE(shop_id, sale_no)
+        // constraint that collided with the owner's first sale (#1), retry with a timestamp-derived unique sale_no so the first sale is never rejected!
+        if (table === 'sales') {
+          const uniqueSaleNoRow = {
+            ...noFkRow,
+            sale_no: Number(String(Date.now()).slice(-6)) + Math.floor(Math.random() * 90 + 10),
+          };
+          const saleNoRetry = await fetch(`${this.url}/rest/v1/${table}`, {
+            method: 'POST',
+            headers: anonHeaders,
+            body: JSON.stringify([uniqueSaleNoRow]),
+          });
+          if (saleNoRetry.ok) {
+            patchedCount++;
+            continue;
+          }
         }
 
         // 4. Fallback to PATCH for partial updates (e.g. status update, amount_paid update)

@@ -904,7 +904,7 @@ export async function seedKenyanDukaDemo(force = false): Promise<void> {
 /**
  * Get or automatically open active cash session for current user and device
  */
-export async function getActiveCashSession(): Promise<CashSession> {
+export async function getActiveCashSession(outboxCollector?: OutboxEntry[]): Promise<CashSession> {
   const shop = await getShopMeta();
   const deviceId = await getOrCreateDeviceId();
   const now = serverNow();
@@ -959,14 +959,20 @@ export async function getActiveCashSession(): Promise<CashSession> {
   };
 
   await db.cash_sessions.put(newSession);
-  void syncWriteThrough({
+  const sessionOutboxEntry: OutboxEntry = {
     id: newSessionId,
     table: 'cash_sessions',
     op: 'insert',
     payload: newSession as unknown as Record<string, unknown>,
     attempts: 0,
     next_attempt_at: now,
-  });
+  };
+
+  if (outboxCollector) {
+    outboxCollector.push(sessionOutboxEntry);
+  } else {
+    void syncWriteThrough(sessionOutboxEntry);
+  }
 
   return newSession;
 }
@@ -1112,19 +1118,43 @@ export async function recordSale(saleData: {
   const shop = await getShopMeta();
   const deviceId = await getOrCreateDeviceId();
   const now = serverNow();
-  const activeSession = await getActiveCashSession();
-
-  const saleId = crypto.randomUUID();
-  const existingSalesCount = await db.sales.count();
-  const saleNo = existingSalesCount + 1;
-
-  let totalAmount = toKES(0);
-  let totalProfit = toKES(0);
-  let itemCount = 0;
 
   const saleItems: SaleItem[] = [];
   const stockMovements: StockMovement[] = [];
   const outboxEntries: OutboxEntry[] = [];
+
+  // Pass outboxEntries so if this is the attendant's very first transaction (which opens a new cash session),
+  // the cash_session and sale are pushed together in a single ordered batch without racing or triggering a backoff!
+  const activeSession = await getActiveCashSession(outboxEntries);
+
+  const saleId = crypto.randomUUID();
+  const existingSales = await db.sales.toArray();
+  let maxSaleNo = existingSales.length;
+  for (const s of existingSales) {
+    if (typeof s.sale_no === 'number' && s.sale_no > maxSaleNo) {
+      maxSaleNo = s.sale_no;
+    }
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const vaultSales: any[] = [
+        ...JSON.parse(localStorage.getItem('smartsort_attendant_vault_sales') || '[]'),
+        ...JSON.parse(localStorage.getItem('smartsort_cloud_mock_sales') || '[]'),
+      ];
+      for (const vs of vaultSales) {
+        if (vs && typeof vs.sale_no === 'number' && vs.sale_no > maxSaleNo) {
+          maxSaleNo = vs.sale_no;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  const saleNo = maxSaleNo + 1;
+
+  let totalAmount = toKES(0);
+  let totalProfit = toKES(0);
+  let itemCount = 0;
 
   for (const line of saleData.items) {
     const finalUnitPrice = line.overridePrice ?? line.unitPrice;
