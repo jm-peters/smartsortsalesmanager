@@ -904,6 +904,10 @@ export const SellScreen: React.FC<SellScreenProps> = ({
 
     setIsFinalizing(true);
     try {
+      if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+        window.navigator.vibrate(25);
+      }
+
       const result = await recordSale({
         paymentMethod: selectedPaymentMethod,
         items: cart,
