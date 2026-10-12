@@ -113,6 +113,10 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+      dedupe: ['react', 'react-dom'],
+    },
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'dexie', 'dexie-react-hooks'],
     },
     server: {
       forwardConsole: false,
