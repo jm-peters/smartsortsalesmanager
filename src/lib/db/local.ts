@@ -1207,13 +1207,8 @@ export async function recordSale(saleData: {
   const activeSession = await getActiveCashSession(outboxEntries);
 
   const saleId = crypto.randomUUID();
-  const existingSales = await db.sales.toArray();
-  let maxSaleNo = existingSales.length;
-  for (const s of existingSales) {
-    if (typeof s.sale_no === 'number' && s.sale_no > maxSaleNo) {
-      maxSaleNo = s.sale_no;
-    }
-  }
+  const lastSale = await db.sales.orderBy('sale_no').last();
+  let maxSaleNo = lastSale?.sale_no || 0;
   try {
     if (typeof localStorage !== 'undefined') {
       const vaultSales: any[] = [
@@ -1592,8 +1587,8 @@ export async function recordSale(saleData: {
     // ignore
   }
 
-  // 5. Direct online write-through to Supabase (or queue in outbox if offline)
-  await syncWriteThrough(outboxEntries);
+  // 5. Direct online write-through to Supabase (or queue in outbox if offline) - non-blocking
+  void syncWriteThrough(outboxEntries);
 
   return { sale: saleHeader, items: saleItems };
 }
