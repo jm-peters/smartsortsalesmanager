@@ -9,6 +9,7 @@ import {
   User as UserIcon,
   Globe,
   Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 import {
   db,
@@ -64,6 +65,57 @@ export default function App() {
   const [isAdminPortalOpen, setIsAdminPortalOpen] = useState(false);
   const [ownerBranches, setOwnerBranches] = useState<Shop[]>([]);
 
+  // In-App Pull-Down-to-Refresh state (refreshes data smoothly without reloading the web page or locking the app)
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const touchStartYRef = React.useRef(0);
+  const isPullingRef = React.useRef(false);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (typeof window !== 'undefined' && window.scrollY <= 5) {
+      touchStartYRef.current = e.touches[0].clientY;
+      isPullingRef.current = true;
+    } else {
+      isPullingRef.current = false;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isPullingRef.current || isPullRefreshing) return;
+    const currentY = e.touches[0].clientY;
+    const diff = currentY - touchStartYRef.current;
+    if (diff > 0 && typeof window !== 'undefined' && window.scrollY <= 5) {
+      setPullDistance(Math.min(diff * 0.4, 75));
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  const handleTouchEnd = async () => {
+    if (!isPullingRef.current) return;
+    isPullingRef.current = false;
+    if (pullDistance > 45 && !isPullRefreshing) {
+      setIsPullRefreshing(true);
+      setPullDistance(48);
+      if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+        window.navigator.vibrate(25);
+      }
+      try {
+        if (userRole === 'owner') {
+          await syncEngine.reconcileAllAttendantSales(shop?.shop_id);
+        } else {
+          await syncEngine.triggerSync(true);
+        }
+      } catch {}
+      setTimeout(() => {
+        setIsPullRefreshing(false);
+        setPullDistance(0);
+      }, 700);
+    } else {
+      setPullDistance(0);
+    }
+  };
+
   useEffect(() => {
     if (user && userRole === 'owner') {
       getOwnerBranches().then(setOwnerBranches).catch(() => {});
@@ -87,11 +139,26 @@ export default function App() {
       try {
         const existingUser = await getShopUser();
         const existingShop = await getShopMeta();
+
+        // Check active session in this tab/window to keep user inside on pull-to-refresh
+        let activeSession: { userId?: string; role?: UserRole; shopId?: string } | null = null;
+        try {
+          if (typeof sessionStorage !== 'undefined') {
+            const raw = sessionStorage.getItem('smartsort_active_session');
+            if (raw) activeSession = JSON.parse(raw);
+          }
+        } catch {}
+
         if (!existingUser) {
           // Pre-seed default database in background (including admin shop/user)
           await initializeDefaultDatabase();
           setUser(null);
           setShop(null);
+        } else if (activeSession && activeSession.userId) {
+          // Seamless session restoration on pull-to-refresh or page reload! App does not lock!
+          setUser(existingUser);
+          setShop(existingShop);
+          setUserRole(existingUser.role || (activeSession.role as UserRole) || 'owner');
         } else {
           // Shop already setup, await PIN or password unlock
           setShop(existingShop);
@@ -171,6 +238,19 @@ export default function App() {
           setUser(authenticatedUser);
           setShop(authenticatedShop);
           setUserRole(authenticatedUser.role);
+          try {
+            if (typeof sessionStorage !== 'undefined') {
+              sessionStorage.setItem(
+                'smartsort_active_session',
+                JSON.stringify({
+                  userId: authenticatedUser.id,
+                  role: authenticatedUser.role,
+                  shopId: authenticatedShop.shop_id,
+                  authenticatedAt: Date.now(),
+                })
+              );
+            }
+          } catch {}
           void syncEngine.triggerSync();
         }}
         language={language}
@@ -196,9 +276,29 @@ export default function App() {
   const tillNumber = shop?.till_number || '542190';
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col items-center">
+    <div
+      className="min-h-screen bg-slate-100 flex flex-col items-center select-none"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
       {/* Responsive Shell Wrapper (supports mobile, tablet, and laptop) */}
-      <div className="w-full max-w-[420px] sm:max-w-[480px] md:max-w-[768px] lg:max-w-[1024px] xl:max-w-[1200px] bg-slate-50 min-h-screen shadow-2xl flex flex-col relative">
+      <div className="w-full max-w-[420px] sm:max-w-[480px] md:max-w-[768px] lg:max-w-[1024px] xl:max-w-[1200px] bg-slate-50 min-h-screen shadow-2xl flex flex-col relative overflow-hidden">
+        {/* Pull-to-refresh Indicator Banner */}
+        {(pullDistance > 0 || isPullRefreshing) && (
+          <div
+            className="absolute top-0 left-0 right-0 z-40 bg-emerald-600 text-white text-xs font-bold py-2 flex items-center justify-center gap-2 shadow-md transition-all"
+            style={{ transform: `translateY(${Math.max(0, pullDistance - 48)}px)` }}
+          >
+            <RefreshCw className={`w-4 h-4 text-white ${isPullRefreshing ? 'animate-spin' : ''}`} />
+            <span>
+              {isPullRefreshing
+                ? (language === 'en' ? 'Refreshing shop records & inventory...' : 'Inasawazisha duka...')
+                : (language === 'en' ? 'Release to refresh' : 'Achilia upakie upya')}
+            </span>
+          </div>
+        )}
+
         {/* Top Header */}
         <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-3 py-2 flex items-center justify-between gap-2 shadow-2xs">
           {/* Left: Avatar button (tap to open Profile) + Shop Name */}
@@ -374,7 +474,17 @@ export default function App() {
               shopName={shopName}
               tillNumber={tillNumber}
               onUpdateShopInfo={handleUpdateShop}
-              onLogout={() => setUser(null)}
+              onLogout={() => {
+                try {
+                  if (typeof sessionStorage !== 'undefined') {
+                    sessionStorage.removeItem('smartsort_active_session');
+                  }
+                  if (typeof localStorage !== 'undefined') {
+                    localStorage.removeItem('smartsort_authenticated');
+                  }
+                } catch {}
+                setUser(null);
+              }}
               onOpenAdminPortal={() => setIsAdminPortalOpen(true)}
             />
           )}

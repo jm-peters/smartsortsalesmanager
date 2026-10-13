@@ -440,8 +440,45 @@ class SyncEngine {
       // Respect active exponential backoff window (5s, 30s, 2m) when a background pull/push failed due to network jitter
       if (onlineNow && !this.isSyncing && Date.now() >= this.nextBackoffRetryMs) {
         void this.triggerSync();
+        void this.retryPendingSales();
       }
     }, interval);
+  }
+
+  /**
+   * Dedicated background retry loop specifically for pending sales.
+   * Runs regularly to query any sales in Dexie with sync_status === 'pending'
+   * and push them directly with upsert to Supabase.
+   */
+  public async retryPendingSales(): Promise<void> {
+    const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : this.currentStatus.isOnline;
+    if (!onlineNow) return;
+
+    try {
+      const allSales = await db.sales.toArray();
+      const pendingSales = allSales.filter((s) => s.sync_status === 'pending');
+      if (pendingSales.length === 0) return;
+
+      for (const s of pendingSales) {
+        try {
+          const sanitized = this.sanitizePayload('sales', s as any);
+          const res = await this.adapter.pushBatch('sales', [sanitized]);
+          if (res.pushedCount > 0 && (!res.errors || res.errors.length === 0)) {
+            await db.sales.update(s.id, { sync_status: 'synced' });
+            const items = await db.sale_items.where('sale_id').equals(s.id).toArray();
+            if (items.length > 0) {
+              const sanitizedItems = items.map((it) => this.sanitizePayload('sale_items', it as any));
+              await this.adapter.pushBatch('sale_items', sanitizedItems);
+            }
+          }
+        } catch {
+          // keep pending for next interval
+        }
+      }
+      await this.updateCounts();
+    } catch {
+      // ignore
+    }
   }
 
   public async updateCounts() {
@@ -529,6 +566,13 @@ class SyncEngine {
         const result = await this.adapter.pushBatch(table, payloads);
         if (result.pushedCount > 0 && (!result.errors || result.errors.length === 0)) {
           // Direct online push succeeded immediately — no queueing needed!
+          if (table === 'sales') {
+            for (const sEntry of tableEntries) {
+              if (sEntry.id) {
+                await db.sales.update(sEntry.id, { sync_status: 'synced' }).catch(() => {});
+              }
+            }
+          }
           continue;
         }
 
@@ -537,7 +581,11 @@ class SyncEngine {
           try {
             const singlePayload = this.sanitizePayload(table, singleEntry.payload);
             const singleRes = await this.adapter.pushBatch(table, [singlePayload]);
-            if (singleRes.pushedCount === 0 || (singleRes.errors && singleRes.errors.length > 0)) {
+            if (singleRes.pushedCount > 0 && (!singleRes.errors || singleRes.errors.length === 0)) {
+              if (table === 'sales' && singleEntry.id) {
+                await db.sales.update(singleEntry.id, { sync_status: 'synced' }).catch(() => {});
+              }
+            } else {
               fallbackQueue.push({
                 ...singleEntry,
                 attempts: 1,
@@ -809,6 +857,13 @@ class SyncEngine {
             .map((e) => e.seq)
             .filter((s): s is number => s !== undefined);
           await db.outbox.bulkDelete(seqs);
+          if (table === 'sales') {
+            for (const ent of entries) {
+              if (ent.id) {
+                await db.sales.update(ent.id, { sync_status: 'synced' }).catch(() => {});
+              }
+            }
+          }
           continue;
         }
 
@@ -847,6 +902,9 @@ class SyncEngine {
         if (singleResult.pushedCount > 0 && (!singleResult.errors || singleResult.errors.length === 0)) {
           if (entry.seq !== undefined) {
             await db.outbox.delete(entry.seq);
+          }
+          if (table === 'sales' && entry.id) {
+            await db.sales.update(entry.id, { sync_status: 'synced' }).catch(() => {});
           }
         } else {
           const errMsg = singleResult.errors?.[0]?.error || fallbackErr || 'Push failed';
@@ -1062,10 +1120,74 @@ class SyncEngine {
               return row;
             });
 
-            // Idempotent upsert into local table
+            // Deterministic Conflict Resolution (Last Write Wins based on strictly monotonic counter + timestamps)
             const targetTable = (db as any)[table];
             if (targetTable) {
-              await targetTable.bulkPut(normalizedRows);
+              for (const r of normalizedRows) {
+                const row = { ...r };
+                const remoteVersion = Number(row.version || row.counter || 0);
+                const remoteTime = new Date(row.updated_at || row.created_at || 0).getTime();
+
+                const existing = await targetTable.get(row.id);
+                if (existing) {
+                  const localVersion = Number(existing.version || existing.counter || 0);
+                  const localTime = new Date(existing.updated_at || existing.created_at || 0).getTime();
+
+                  // Last Write Wins (LWW) rule:
+                  // 1. Higher version / monotonic counter wins.
+                  // 2. If versions are equal, higher updated_at timestamp wins.
+                  let remoteWins = false;
+                  if (remoteVersion > localVersion) {
+                    remoteWins = true;
+                  } else if (remoteVersion === localVersion) {
+                    if (remoteTime > localTime) {
+                      remoteWins = true;
+                    }
+                  }
+
+                  if (remoteWins) {
+                    // Remote wins: archive local losing version to conflict_log (zero data loss)
+                    try {
+                      await db.conflict_log.add({
+                        record_id: row.id,
+                        table_name: table,
+                        local_version: localVersion,
+                        remote_version: remoteVersion,
+                        local_updated_at: existing.updated_at || existing.created_at || new Date().toISOString(),
+                        remote_updated_at: row.updated_at || row.created_at || new Date().toISOString(),
+                        winning_source: 'remote',
+                        losing_record: existing,
+                        resolved_at: new Date().toISOString(),
+                      });
+                    } catch {
+                      // ignore
+                    }
+                    await targetTable.put(row);
+                  } else {
+                    // Local wins: retain local version, archive remote losing version to conflict_log (zero data loss)
+                    try {
+                      await db.conflict_log.add({
+                        record_id: row.id,
+                        table_name: table,
+                        local_version: localVersion,
+                        remote_version: remoteVersion,
+                        local_updated_at: existing.updated_at || existing.created_at || new Date().toISOString(),
+                        remote_updated_at: row.updated_at || row.created_at || new Date().toISOString(),
+                        winning_source: 'local',
+                        losing_record: row,
+                        resolved_at: new Date().toISOString(),
+                      });
+                    } catch {
+                      // ignore
+                    }
+                  }
+                } else {
+                  if (!row.version) {
+                    row.version = remoteVersion || 1;
+                  }
+                  await targetTable.put(row);
+                }
+              }
             }
           }
         }
@@ -1216,6 +1338,68 @@ class SyncEngine {
         } catch {
           // ignore
         }
+      }
+
+      // 4b. Query Supabase directly via official Supabase client for all sales, line items, and debts
+      try {
+        const { data: supaSales, error: sErr } = await supabase
+          .from('sales')
+          .select('*')
+          .or(`shop_id.eq.${shopId},shop_id.eq.shop-demo-kenya-001`)
+          .order('created_at', { ascending: false })
+          .limit(1000);
+
+        if (!sErr && Array.isArray(supaSales) && supaSales.length > 0) {
+          const mappedSales = supaSales.map((s: any) => ({
+            ...s,
+            shop_id: shopId,
+            total: Number(s.total || 0),
+            total_profit: Number(s.total_profit || 0),
+            item_count: Number(s.item_count || 1),
+            status: s.status || 'completed',
+            recorded_by: s.recorded_by || s.cashier_name || s.created_by_name || undefined,
+            sync_status: 'synced',
+          }));
+          await db.sales.bulkPut(mappedSales);
+        }
+
+        const { data: supaItems, error: itErr } = await supabase
+          .from('sale_items')
+          .select('*')
+          .or(`shop_id.eq.${shopId},shop_id.eq.shop-demo-kenya-001`)
+          .limit(2000);
+
+        if (!itErr && Array.isArray(supaItems) && supaItems.length > 0) {
+          const mappedItems = supaItems.map((it: any) => ({
+            ...it,
+            shop_id: shopId,
+            qty: Number(it.qty || 0),
+            unit_price: Number(it.unit_price || 0),
+            unit_cost: Number(it.unit_cost || 0),
+            line_total: Number(it.line_total || 0),
+            line_profit: Number(it.line_profit || 0),
+          }));
+          await db.sale_items.bulkPut(mappedItems);
+        }
+
+        const { data: supaDebts, error: dErr } = await supabase
+          .from('debts')
+          .select('*')
+          .or(`shop_id.eq.${shopId},shop_id.eq.shop-demo-kenya-001`)
+          .limit(1000);
+
+        if (!dErr && Array.isArray(supaDebts) && supaDebts.length > 0) {
+          const mappedDebts = supaDebts.map((d: any) => ({
+            ...d,
+            shop_id: shopId,
+            principal: Number(d.principal || 0),
+            amount_paid: Number(d.amount_paid || 0),
+            recorded_by: d.recorded_by || d.created_by_name || undefined,
+          }));
+          await db.debts.bulkPut(mappedDebts);
+        }
+      } catch (directErr) {
+        console.warn('Direct supabase sales query had fallback:', directErr);
       }
 
       // 5. Ingest from local shared storage / attendant vaults directly to eliminate any possible latency
@@ -1609,7 +1793,7 @@ class SyncEngine {
         shop_id: shopId,
       }));
 
-      const normalizedExpenses = localExpenses.map((ex) => ({
+      const normalizedExpenses = localExpenses.map((ex: any) => ({
         ...ex,
         shop_id: shopId,
         recorded_by: ex.recorded_by || attendantName,

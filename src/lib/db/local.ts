@@ -91,6 +91,7 @@ export interface SaleHeader {
   created_by_name?: string;
   created_by_role?: string;
   cash_session_id?: string | null;
+  sync_status?: 'synced' | 'pending';
 }
 
 export interface SaleItem {
@@ -278,7 +279,32 @@ export interface AuditLog {
   created_at: string;
 }
 
-export class SmartSortDB extends Dexie {
+export interface ConflictLogEntry {
+  id?: number;
+  record_id: string;
+  table_name: string;
+  local_version: number;
+  remote_version: number;
+  local_updated_at: string;
+  remote_updated_at: string;
+  winning_source: 'local' | 'remote';
+  losing_record: any;
+  resolved_at: string;
+}
+
+export async function getNextMonotonicCounter(): Promise<number> {
+  try {
+    const meta = await db.meta.get('global_monotonic_counter');
+    const current = Number(meta?.value || 0);
+    const nextVal = current + 1;
+    await db.meta.put({ key: 'global_monotonic_counter', value: nextVal });
+    return nextVal;
+  } catch {
+    return Date.now();
+  }
+}
+
+class SmartSortDB extends Dexie {
   users!: Table<ShopUser, string>;
   products!: Table<Product, string>;
   stock_movements!: Table<StockMovement, string>;
@@ -296,6 +322,7 @@ export class SmartSortDB extends Dexie {
   sync_state!: Table<SyncState, string>;
   meta!: Table<MetaEntry, string>;
   audit_log!: Table<AuditLog, string>;
+  conflict_log!: Table<ConflictLogEntry, number>;
 
   constructor() {
     super('SmartSortDB');
@@ -356,6 +383,47 @@ export class SmartSortDB extends Dexie {
       meta: 'key',
       audit_log: 'id, shop_id, created_at, [shop_id+created_at], entity_id',
     });
+
+    this.version(4).stores({
+      users: 'id, shop_id, email, phone, role',
+      products: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+updated_at], search_key, is_pinned',
+      stock_movements: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+product_id], ref_id',
+      product_stock: 'product_id, shop_id, [shop_id+product_id]',
+      sales: 'id, shop_id, created_at, [shop_id+created_at], sale_no, status, sync_status, cash_session_id',
+      sale_items: 'id, sale_id, product_id, shop_id',
+      customers: 'id, shop_id, created_at, [shop_id+created_at], phone',
+      debts: 'id, shop_id, created_at, [shop_id+created_at], customer_id, status',
+      debt_payments: 'id, shop_id, debt_id, created_at, [shop_id+created_at], cash_session_id',
+      expenses: 'id, shop_id, created_at, [shop_id+created_at], category, cash_session_id',
+      cash_sessions: 'id, shop_id, opened_at, [shop_id+opened_at], status',
+      held_carts: 'id, shop_id, created_at',
+      product_stats: 'product_id, shop_id, score',
+      outbox: '++seq, id, table, next_attempt_at, attempts',
+      sync_state: 'table',
+      meta: 'key',
+      audit_log: 'id, shop_id, created_at, [shop_id+created_at], entity_id',
+    });
+
+    this.version(5).stores({
+      users: 'id, shop_id, email, phone, role',
+      products: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+updated_at], search_key, is_pinned',
+      stock_movements: 'id, shop_id, created_at, [shop_id+created_at], [shop_id+product_id], ref_id',
+      product_stock: 'product_id, shop_id, [shop_id+product_id]',
+      sales: 'id, shop_id, created_at, [shop_id+created_at], sale_no, status, sync_status, cash_session_id',
+      sale_items: 'id, sale_id, product_id, shop_id',
+      customers: 'id, shop_id, created_at, [shop_id+created_at], phone',
+      debts: 'id, shop_id, created_at, [shop_id+created_at], customer_id, status',
+      debt_payments: 'id, shop_id, debt_id, created_at, [shop_id+created_at], cash_session_id',
+      expenses: 'id, shop_id, created_at, [shop_id+created_at], category, cash_session_id',
+      cash_sessions: 'id, shop_id, opened_at, [shop_id+opened_at], status',
+      held_carts: 'id, shop_id, created_at',
+      product_stats: 'product_id, shop_id, score',
+      outbox: '++seq, id, table, next_attempt_at, attempts',
+      sync_state: 'table',
+      meta: 'key',
+      audit_log: 'id, shop_id, created_at, [shop_id+created_at], entity_id',
+      conflict_log: '++seq, record_id, table_name, resolved_at',
+    });
   }
 }
 
@@ -376,6 +444,17 @@ export function registerDirectSyncDispatcher(dispatcher: DirectSyncDispatcher) {
 export async function syncWriteThrough(input: OutboxEntry | OutboxEntry[]): Promise<void> {
   const entries = Array.isArray(input) ? input : [input];
   if (entries.length === 0) return;
+
+  for (const entry of entries) {
+    if (entry.payload && typeof entry.payload === 'object') {
+      if (!entry.payload.version) {
+        entry.payload.version = await getNextMonotonicCounter();
+      }
+      if (!entry.payload.updated_at) {
+        entry.payload.updated_at = serverNow();
+      }
+    }
+  }
 
   try {
     if (typeof localStorage !== 'undefined') {
@@ -1360,6 +1439,7 @@ export async function recordSale(saleData: {
     payment_method: saleData.paymentMethod,
     debt_id: debtId,
     status: 'completed',
+    sync_status: 'pending',
     voided_at: null,
     void_reason: null,
     voided_by: null,
@@ -1513,7 +1593,7 @@ export async function recordSale(saleData: {
   }
 
   // 5. Direct online write-through to Supabase (or queue in outbox if offline)
-  void syncWriteThrough(outboxEntries);
+  await syncWriteThrough(outboxEntries);
 
   return { sale: saleHeader, items: saleItems };
 }

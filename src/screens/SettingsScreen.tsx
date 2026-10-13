@@ -563,7 +563,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </span>
           </div>
 
-          {currentUser?.role === 'owner' || isOwner ? (
+          {currentUser?.role === 'owner' ? (
             <>
               <p className="text-xs text-slate-500">
                 {isEn
@@ -575,7 +575,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 <button
                   type="button"
                   onClick={async () => {
-                    if (currentUser && currentUser.role !== 'owner') return;
                     onChangeRole('owner');
                   }}
                   className={`p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
