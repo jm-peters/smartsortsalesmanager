@@ -18,6 +18,7 @@ import {
   deduplicateStaffAttendants,
   getStaffAttendants,
   getShopUser,
+  serverNow,
   type OutboxEntry,
 } from '../db/local';
 import type { RemoteAdapter } from '../remote/types';
@@ -196,6 +197,7 @@ class SyncEngine {
     this.emitStatus();
 
     await this.resetOutboxBackoffOnReconnect();
+    await this.retryPendingSales();
     await this.triggerSync(true);
 
     // Follow-up sync pass 2.5s after interface comes up to handle DHCP/DNS warm-up delay
@@ -204,6 +206,7 @@ class SyncEngine {
     }
     this.reconnectStabilizeTimer = setTimeout(() => {
       if (typeof navigator !== 'undefined' && navigator.onLine) {
+        void this.retryPendingSales();
         void this.triggerSync(true);
       }
     }, 2500);
@@ -1933,6 +1936,172 @@ class SyncEngine {
       await this.updateCounts();
       this.emitStatus();
     }
+  }
+
+  /**
+   * Export attendant's EOD sales report as JSON for owner reconciliation
+   */
+  public async exportAttendantEODSales(sessionId?: string): Promise<{ success: boolean; filename: string }> {
+    const meta = await db.meta.get('shop_info');
+    const shopId = meta?.value?.shop_id || 'default_shop';
+    const shopName = meta?.value?.shop_name || 'Duka';
+
+    let sales = await db.sales.toArray();
+    let saleItems = await db.sale_items.toArray();
+    let cashSessions = await db.cash_sessions.toArray();
+    let expenses = await db.expenses.toArray();
+    let debtPayments = await db.debt_payments.toArray();
+    let debts = await db.debts.toArray();
+
+    if (sessionId) {
+      sales = sales.filter((s) => s.cash_session_id === sessionId);
+      const saleIds = new Set(sales.map((s) => s.id));
+      saleItems = saleItems.filter((it) => saleIds.has(it.sale_id));
+      cashSessions = cashSessions.filter((cs) => cs.id === sessionId);
+    }
+
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      shopId,
+      shopName,
+      sessionId: sessionId || null,
+      sales,
+      sale_items: saleItems,
+      cash_sessions: cashSessions,
+      expenses,
+      debt_payments: debtPayments,
+      debts,
+    };
+
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute(
+      'download',
+      `smartsort_attendant_sales_${shopName.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.json`
+    );
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+
+    return { success: true, filename: downloadAnchor.download };
+  }
+
+  /**
+   * Reconcile imported attendant EOD sales export with owner's database using LWW deterministic conflict resolution
+   */
+  public async reconcileAttendantEODExport(importedData: any): Promise<{
+    success: boolean;
+    salesCount: number;
+    itemsCount: number;
+    conflictsResolved: number;
+    message: string;
+  }> {
+    if (!importedData || !importedData.sales || !Array.isArray(importedData.sales)) {
+      throw new Error('Invalid attendant sales export file format.');
+    }
+
+    let conflictsResolved = 0;
+    const nowIso = serverNow();
+
+    await db.transaction(
+      'rw',
+      [
+        db.sales,
+        db.sale_items,
+        db.cash_sessions,
+        db.expenses,
+        db.debt_payments,
+        db.debts,
+        db.conflict_log,
+      ],
+      async () => {
+        for (const incSale of importedData.sales) {
+          const localSale = await db.sales.get(incSale.id);
+          if (!localSale) {
+            await db.sales.put(incSale);
+          } else {
+            const incVer = Number((incSale as any).version || 0);
+            const localVer = Number((localSale as any).version || 0);
+            const incTime = new Date(incSale.updated_at || incSale.created_at || 0).getTime();
+            const localTime = new Date(localSale.updated_at || localSale.created_at || 0).getTime();
+
+            if (incVer > localVer || (incVer === localVer && incTime >= localTime)) {
+              if (incVer < localVer || incTime < localTime) {
+                conflictsResolved++;
+                await db.conflict_log.put({
+                  record_id: incSale.id,
+                  table_name: 'sales',
+                  local_version: localVer,
+                  remote_version: incVer,
+                  local_updated_at: localSale.updated_at || '',
+                  remote_updated_at: incSale.updated_at || '',
+                  winning_source: 'remote',
+                  losing_record: localSale,
+                  resolved_at: nowIso,
+                });
+              }
+              await db.sales.put(incSale);
+            } else {
+              conflictsResolved++;
+              await db.conflict_log.put({
+                record_id: incSale.id,
+                table_name: 'sales',
+                local_version: localVer,
+                remote_version: incVer,
+                local_updated_at: localSale.updated_at || '',
+                remote_updated_at: incSale.updated_at || '',
+                winning_source: 'local',
+                losing_record: incSale,
+                resolved_at: nowIso,
+              });
+            }
+          }
+        }
+
+        if (Array.isArray(importedData.sale_items)) {
+          for (const item of importedData.sale_items) {
+            await db.sale_items.put(item);
+          }
+        }
+
+        if (Array.isArray(importedData.cash_sessions)) {
+          for (const cs of importedData.cash_sessions) {
+            const localCs = await db.cash_sessions.get(cs.id);
+            if (!localCs || (cs.status === 'closed' && localCs.status !== 'closed')) {
+              await db.cash_sessions.put(cs);
+            }
+          }
+        }
+
+        if (Array.isArray(importedData.expenses)) {
+          for (const ex of importedData.expenses) {
+            await db.expenses.put(ex);
+          }
+        }
+
+        if (Array.isArray(importedData.debt_payments)) {
+          for (const dp of importedData.debt_payments) {
+            await db.debt_payments.put(dp);
+          }
+        }
+        if (Array.isArray(importedData.debts)) {
+          for (const d of importedData.debts) {
+            await db.debts.put(d);
+          }
+        }
+      }
+    );
+
+    void this.triggerSync(true);
+
+    return {
+      success: true,
+      salesCount: importedData.sales.length,
+      itemsCount: importedData.sale_items?.length || 0,
+      conflictsResolved,
+      message: `Successfully reconciled ${importedData.sales.length} sales and ${importedData.sale_items?.length || 0} items (${conflictsResolved} conflicts resolved using Last-Write-Wins).`,
+    };
   }
 }
 

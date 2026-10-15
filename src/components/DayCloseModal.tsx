@@ -13,6 +13,7 @@ import {
   type UserRole,
 } from '../lib/db/local';
 import type { Language } from '../lib/i18n';
+import { syncEngine } from '../lib/sync/engine';
 
 interface DayCloseModalProps {
   isOpen: boolean;
@@ -391,6 +392,29 @@ export const DayCloseModal: React.FC<DayCloseModalProps> = ({
                 placeholder={isEn ? 'Optional closing note (e.g. forgot to record 2 sodas)...' : 'Andika maelezo yoyote (mfano: nimesahau soda 2)...'}
                 className="w-full h-11 px-3 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500"
               />
+            </div>
+
+            {/* Download Attendant Sales Report for Owner */}
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                fullWidth
+                onClick={async () => {
+                  try {
+                    await syncEngine.exportAttendantEODSales(session.id);
+                    window.alert(
+                      isEn
+                        ? 'Attendant EOD sales report downloaded successfully. Send this file to the store owner.'
+                        : 'Ripoti ya mauzo imepakuliwa kwa mafanikio. Tuma faili hili kwa mwenye duka (Owner).'
+                    );
+                  } catch {
+                    window.alert(isEn ? 'Failed to download report.' : 'Imeshindwa kupakua ripoti.');
+                  }
+                }}
+              >
+                {isEn ? '📥 Download Sales Report (for Owner)' : '📥 Pakua Ripoti ya Mauzo (kwa Owner)'}
+              </Button>
             </div>
 
             {/* Final Confirmation Button */}

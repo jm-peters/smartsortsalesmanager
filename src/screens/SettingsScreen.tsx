@@ -314,6 +314,37 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     e.target.value = '';
   };
 
+  // Reconcile Attendant EOD Sales Export
+  const handleReconcileAttendantSales = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        if (!text) throw new Error('Empty file');
+        const data = JSON.parse(text);
+
+        const res = await syncEngine.reconcileAttendantEODExport(data);
+        window.alert(
+          isEn
+            ? `Reconciliation Successful!\n${res.message}\nConflicts Resolved: ${res.conflictsResolved}`
+            : `Upatanisho Umekamilika!\n${res.message}\nMizozo Iliyotatuliwa: ${res.conflictsResolved}`
+        );
+        window.location.reload();
+      } catch (err: any) {
+        window.alert(
+          isEn
+            ? `Failed to reconcile attendant sales: ${err.message || 'Invalid file format'}`
+            : `Kosa katika kupatanisha mauzo: ${err.message || 'Faili si sahihi'}`
+        );
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   // Frequently Asked Questions
   const faqs = isEn
     ? [
@@ -835,6 +866,40 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             )}
           </div>
         </div>
+
+        {/* Attendant EOD Sales Reconciliation (Owner) */}
+        {isOwner && (
+          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-emerald-600" />
+                {isEn ? 'Attendant Sales Reconciliation (End-of-Day)' : 'Upatanisho wa Mauzo ya Attendant (EOD)'}
+              </span>
+              <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                {isEn ? 'Owner Tool' : 'Zana ya Owner'}
+              </span>
+            </div>
+
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              {isEn
+                ? 'Upload the sales report file downloaded by your attendant at the end of the shift. The system will deterministically reconcile records and resolve any version conflicts using Last-Write-Wins with zero data loss.'
+                : 'Pakia faili la ripoti ya mauzo lililopakuliwa na attendant mwisho wa zamu. Mfumo utapatanisha rekodi na kutatua mizozo yoyote salama bila kupoteza data.'}
+            </p>
+
+            <div>
+              <label className="p-2.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-center gap-1.5 transition active:scale-[0.98] cursor-pointer text-center">
+                <Upload className="w-4 h-4 text-emerald-600" />
+                <span>{isEn ? 'Upload Attendant Sales & Reconcile (.json)' : 'Pakia Mauzo ya Attendant na Upatanishe (.json)'}</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleReconcileAttendantSales}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+        )}
 
         {/* Frequently Asked Questions (Expandable Accordion) */}
         <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2.5">
